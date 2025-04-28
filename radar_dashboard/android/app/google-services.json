@@ -1,0 +1,67 @@
+{
+  "project_info": {
+    "project_number": "26070783383",
+    "project_id": "project-radar-72d02",
+    "storage_bucket": "project-radar-72d02.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:26070783383:android:b413d27c43a562b95ca0d2",
+        "android_client_info": {
+          "package_name": "com.example.project_radar"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBqQ7oSt2AxBHjNMV88dMse9tyREz3wVS0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:26070783383:android:40ace7e4dc9809da5ca0d2",
+        "android_client_info": {
+          "package_name": "com.example.project_radar_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBqQ7oSt2AxBHjNMV88dMse9tyREz3wVS0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:26070783383:android:97be73b6a2d515395ca0d2",
+        "android_client_info": {
+          "package_name": "com.example.radar_dashboard"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBqQ7oSt2AxBHjNMV88dMse9tyREz3wVS0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
