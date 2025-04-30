@@ -11,7 +11,7 @@ class WeatherMonitoring extends StatefulWidget {
 }
 
 class _WeatherMonitoringState extends State<WeatherMonitoring> {
-  List<Map<String, dynamic>> weatherData = [];
+  Map<String, dynamic>? weatherData;
   bool isLoading = true;
   String errorMessage = '';
 
@@ -32,32 +32,26 @@ class _WeatherMonitoringState extends State<WeatherMonitoring> {
       
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        
         setState(() {
-          weatherData = [
-            {
-              'city': city,
-              'condition': data['weather'][0]['main'],
-              'description': data['weather'][0]['description'],
-              'temp': '${data['main']['temp'].round()}°C',
-              'feels_like': '${data['main']['feels_like'].round()}°C',
-              'icon': _getWeatherIcon(data['weather'][0]['main']),
-              'humidity': '${data['main']['humidity']}%',
-              'wind': '${(data['wind']['speed'] * 3.6).toStringAsFixed(1)} km/h',
-              'pressure': '${data['main']['pressure']} hPa',
-            }
-          ];
+          weatherData = {
+            'city': city,
+            'temp': '${data['main']['temp'].round()}°C',
+            'feels_like': '${data['main']['feels_like'].round()}°C',
+            'condition': data['weather'][0]['main'],
+            'icon': _getWeatherIcon(data['weather'][0]['main']),
+            'color': _getWeatherColor(data['weather'][0]['main']),
+          };
           isLoading = false;
         });
       } else {
         setState(() {
-          errorMessage = 'Failed to load weather data: ${response.statusCode}';
+          errorMessage = 'Failed to load weather data';
           isLoading = false;
         });
       }
     } catch (e) {
       setState(() {
-        errorMessage = 'Error fetching weather data: $e';
+        errorMessage = 'Connection error';
         isLoading = false;
       });
     }
@@ -65,16 +59,21 @@ class _WeatherMonitoringState extends State<WeatherMonitoring> {
 
   IconData _getWeatherIcon(String condition) {
     switch (condition.toLowerCase()) {
-      case 'rain':
-        return Icons.water_drop_outlined;
-      case 'thunderstorm':
-        return Icons.bolt_outlined;
-      case 'clear':
-        return Icons.wb_sunny_outlined;
-      case 'clouds':
-        return Icons.cloud_outlined;
-      default:
-        return Icons.cloud_outlined;
+      case 'rain': return Icons.water_drop;
+      case 'thunderstorm': return Icons.electric_bolt;
+      case 'clear': return Icons.wb_sunny;
+      case 'clouds': return Icons.cloud;
+      default: return Icons.cloud;
+    }
+  }
+
+  Color _getWeatherColor(String condition) {
+    switch (condition.toLowerCase()) {
+      case 'rain': return Colors.blue;
+      case 'thunderstorm': return Colors.deepPurple;
+      case 'clear': return Colors.orange;
+      case 'clouds': return Colors.blueGrey;
+      default: return Colors.teal;
     }
   }
 
@@ -92,191 +91,90 @@ class _WeatherMonitoringState extends State<WeatherMonitoring> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SectionHeader(
-              icon: Icons.cloud_outlined,
+              icon: Icons.cloud,
               title: 'WEATHER MONITORING',
             ),
             const SizedBox(height: 20),
             if (isLoading)
               const Center(child: CircularProgressIndicator())
             else if (errorMessage.isNotEmpty)
-              Center(child: Text(errorMessage, style: TextStyle(color: Colors.red[700])))
+              Center(
+                child: Text(
+                  errorMessage,
+                  style: TextStyle(color: Colors.red[700]),
+                ),
+              )
             else
-              _buildWeatherCard(),
+              _buildWeatherDisplay(),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildWeatherCard() {
-    final data = weatherData.first;
+  Widget _buildWeatherDisplay() {
+    final color = weatherData!['color'];
     
-    return SizedBox(
-      height: 250, // Maintain similar height to original
-      child: Stack(
-        children: [
-          // Background gradient
-          Positioned.fill(
-            child: Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    _getWeatherIconColor(data['condition']).withOpacity(0.1),
-                    _getWeatherIconColor(data['condition']).withOpacity(0.05),
-                  ],
-                ),
+    return Container(
+      height: 250,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            color.withOpacity(0.1),
+            color.withOpacity(0.05),
+          ],
+        ),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // City and condition
+            Text(
+              weatherData!['city'],
+              style: const TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
               ),
             ),
-          ),
-          
-          // Weather content
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
+            const SizedBox(height: 8),
+            
+            // Weather icon and temperature
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // City and condition
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      data['city'],
-                      style: const TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.black87,
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: _getWeatherIconColor(data['condition']).withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        data['condition'],
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: _getWeatherIconColor(data['condition']),
-                        ),
-                      ),
-                    ),
-                  ],
+                Icon(
+                  weatherData!['icon'],
+                  size: 60,
+                  color: color,
                 ),
-                
-                const SizedBox(height: 8),
-                
-                // Description
+                const SizedBox(width: 8),
                 Text(
-                  data['description'].toString().toUpperCase(),
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: Colors.grey[700],
-                    letterSpacing: 1.2,
+                  weatherData!['temp'],
+                  style: const TextStyle(
+                    fontSize: 48,
+                    fontWeight: FontWeight.w300,
                   ),
-                ),
-                
-                const SizedBox(height: 16),
-                
-                // Main temperature
-                Center(
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Icon(
-                        data['icon'],
-                        size: 60,
-                        color: _getWeatherIconColor(data['condition']),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        data['temp'],
-                        style: const TextStyle(
-                          fontSize: 48,
-                          fontWeight: FontWeight.w300,
-                          color: Colors.black87,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                
-                const SizedBox(height: 8),
-                
-                // Feels like
-                Center(
-                  child: Text(
-                    'Feels like ${data['feels_like']}',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.grey[600],
-                    ),
-                  ),
-                ),
-                
-                const Spacer(),
-                
-                // Weather details
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    _buildWeatherDetail(Icons.water_drop, 'Humidity', data['humidity']),
-                    _buildWeatherDetail(Icons.air, 'Wind', data['wind']),
-                    _buildWeatherDetail(Icons.speed, 'Pressure', data['pressure']),
-                  ],
                 ),
               ],
             ),
-          ),
-        ],
+            
+            // Feels like
+            Text(
+              'Feels like ${weatherData!['feels_like']}',
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey[600],
+              ),
+            ),
+          ],
+        ),
       ),
     );
-  }
-
-  Widget _buildWeatherDetail(IconData icon, String label, String value) {
-    return Column(
-      children: [
-        Icon(icon, size: 20, color: Colors.blueGrey[600]),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 10,
-            color: Colors.grey[600],
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          value,
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: Colors.black87,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Color _getWeatherIconColor(String condition) {
-    switch (condition.toLowerCase()) {
-      case 'rain':
-        return Colors.blue[600]!;
-      case 'thunderstorm':
-        return Colors.deepPurple[600]!;
-      case 'clear':
-        return Colors.orange[600]!;
-      case 'clouds':
-        return Colors.blueGrey[600]!;
-      default:
-        return Colors.teal[600]!;
-    }
   }
 }
