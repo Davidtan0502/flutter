@@ -3,6 +3,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:radar_dashboard/components/section_header.dart';
 
+
 class MonthlyIncidentReport extends StatelessWidget {
   const MonthlyIncidentReport({super.key});
 
