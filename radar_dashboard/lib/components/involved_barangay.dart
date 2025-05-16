@@ -94,35 +94,50 @@ class BarangayDataProcessor {
     );
   }
 
-  String _determineBarangay(String address) {
-    try {
-      final patterns = ['Barangay', 'Brgy.', 'Brgy', 'Bgy.', 'Bgy', 'Village'];
-      final lowerAddress = address.toLowerCase();
-
-      for (final pattern in patterns) {
-        final patternLower = pattern.toLowerCase();
-        if (lowerAddress.contains(patternLower)) {
-          final startIndex = lowerAddress.indexOf(patternLower) + patternLower.length;
-          var barangayPart = address.substring(startIndex).trim();
-          
-          if (barangayPart.contains(',')) {
-            barangayPart = barangayPart.split(',').first.trim();
-          }
-          if (barangayPart.isNotEmpty) {
-            return barangayPart;
-          }
+String _determineBarangay(String address) {
+  try {
+    // Common patterns that indicate a barangay reference
+    final patterns = [
+      'Barangay', 'Brgy.', 'Brgy', 'Bgy.', 'Bgy', 
+      'Village', 'Subdivision', 'Subd.', 'Subd'
+    ];
+    
+    // Convert to lowercase for case-insensitive matching
+    final lowerAddress = address.toLowerCase();
+    
+    // Try to find barangay patterns
+    for (final pattern in patterns) {
+      final patternLower = pattern.toLowerCase();
+      if (lowerAddress.contains(patternLower)) {
+        final startIndex = lowerAddress.indexOf(patternLower) + patternLower.length;
+        var barangayPart = address.substring(startIndex).trim();
+        
+        // Clean up the extracted part
+        barangayPart = barangayPart.split(RegExp(r'[,\-]')).first.trim();
+        
+        // Remove any numbers or special characters that might follow
+        barangayPart = barangayPart.replaceAll(RegExp(r'[0-9#]'), '').trim();
+        
+        if (barangayPart.isNotEmpty) {
+          return barangayPart;
         }
       }
-
-      if (address.contains(',')) {
-        return address.split(',').first.trim();
-      }
-
-      return address;
-    } catch (e) {
-      return 'Unknown';
     }
+    
+    // Fallback: If no pattern found, try to extract the first meaningful word
+    final parts = address.split(RegExp(r'[,\-]'));
+    for (final part in parts) {
+      final trimmed = part.trim();
+      if (trimmed.isNotEmpty && !trimmed.contains(RegExp(r'[0-9]'))) {
+        return trimmed;
+      }
+    }
+    
+    return 'Unknown';
+  } catch (e) {
+    return 'Unknown';
   }
+}
 }
 
 class BarangayChartData {

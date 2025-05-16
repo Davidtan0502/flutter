@@ -123,17 +123,23 @@ class DashboardScreen extends StatelessWidget {
         
         return Card(
           elevation: 1,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: isWide
-                ? Row(
-                    children: [
-                      const Expanded(child: MonthlyIncidentReport()),
-                      const SizedBox(width: 16),
-                      const Expanded(child: InvolvedBarangays()),
-                      const SizedBox(width: 16),
-                      const Expanded(child: WeatherMonitoring()),
-                    ],
+                ? IntrinsicHeight(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Expanded(child: MonthlyIncidentReport()),
+                        const SizedBox(width: 16),
+                        const Expanded(child: InvolvedBarangays()),
+                        const SizedBox(width: 16),
+                        const Expanded(child: WeatherMonitoring()),
+                      ],
+                    ),
                   )
                 : Column(
                     children: [
@@ -152,14 +158,13 @@ class DashboardScreen extends StatelessWidget {
 }
 
 class IncidentStatsWidget extends StatelessWidget {
-final List<StatItem> stats = const [
-  StatItem(Icons.fireplace_outlined, 'Fire', 'Fire', Colors.deepOrange),
-  StatItem(Icons.car_crash_outlined, 'Accidents', 'Accident', Colors.orange),
-  StatItem(Icons.flood_outlined, 'Flood', 'Flood', Colors.blue),
-  StatItem(Icons.warning_outlined, 'Other', 'Other Accidents', Colors.red),
-  StatItem(Icons.list_alt, 'Total', 'Total', Colors.purple, isTotal: true), 
-];
-
+  final List<StatItem> stats = const [
+    StatItem(Icons.fireplace_outlined, 'Fire', 'Fire', Colors.deepOrange),
+    StatItem(Icons.car_crash_outlined, 'Accidents', 'Accident', Colors.orange),
+    StatItem(Icons.flood_outlined, 'Flood', 'Flood', Colors.blue),
+    StatItem(Icons.warning_outlined, 'Other', 'Other Accidents', Colors.red),
+    StatItem(Icons.list_alt, 'Total', 'Total', Colors.purple, isTotal: true), 
+  ];
 
   const IncidentStatsWidget({super.key});
 
@@ -190,7 +195,6 @@ final List<StatItem> stats = const [
             return StatItemWidget(stat: stat, count: count);
           }).toList(),
         );
-
       },
     );
   }

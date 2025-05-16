@@ -1,20 +1,47 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:radar_dashboard/navigation/main_navigation.dart';
+import 'package:radar_dashboard/widgets/loading_screen.dart';
 import 'firebase_options.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-  
-  runApp(const ProjectRadarApp());
+
+  final prefs = await SharedPreferences.getInstance();
+  final isDark = prefs.getBool('isDarkMode') ?? false;
+
+  runApp(ProjectRadarApp(initialDarkMode: isDark));
 }
 
-class ProjectRadarApp extends StatelessWidget {
-  const ProjectRadarApp({super.key});
+class ProjectRadarApp extends StatefulWidget {
+  final bool initialDarkMode;
+
+  const ProjectRadarApp({super.key, required this.initialDarkMode});
+
+  @override
+  State<ProjectRadarApp> createState() => _ProjectRadarAppState();
+}
+
+class _ProjectRadarAppState extends State<ProjectRadarApp> {
+  late bool isDarkMode;
+
+  @override
+  void initState() {
+    super.initState();
+    isDarkMode = widget.initialDarkMode;
+  }
+
+  void toggleTheme(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      isDarkMode = value;
+    });
+    await prefs.setBool('isDarkMode', value);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -30,9 +57,21 @@ class ProjectRadarApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
       ),
-      themeMode: ThemeMode.system,
+      themeMode: isDarkMode ? ThemeMode.dark : ThemeMode.light,
       debugShowCheckedModeBanner: false,
-      home: const NavigationScreen(), 
+      home: FutureBuilder(
+        future: Future.delayed(const Duration(seconds: 2)),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const LoadingScreen();
+          } else {
+            return NavigationScreen(
+              isDarkMode: isDarkMode,
+              onToggleTheme: toggleTheme,
+            );
+          }
+        },
+      ),
     );
   }
 }

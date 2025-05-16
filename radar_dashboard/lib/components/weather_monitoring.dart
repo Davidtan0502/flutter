@@ -12,49 +12,239 @@ class WeatherMonitoring extends StatefulWidget {
 
 class _WeatherMonitoringState extends State<WeatherMonitoring> {
   Map<String, dynamic>? weatherData;
-  bool isLoading = true;
+  bool isLoading = false;
   String errorMessage = '';
+  final TextEditingController _cityController = TextEditingController();
+  String currentCity = 'Manila';
 
   @override
   void initState() {
     super.initState();
-    _fetchWeatherData();
+    _fetchWeatherData(currentCity);
   }
 
-  Future<void> _fetchWeatherData() async {
+  Future<void> _fetchWeatherData(String city) async {
     const apiKey = '1e0dbc808580ffe843728e24a729dcee';
-    const city = 'Manila';
-    const countryCode = 'PH';
-    const url = 'https://api.openweathermap.org/data/2.5/weather?q=$city,$countryCode&appid=$apiKey&units=metric';
+    setState(() {
+      isLoading = true;
+      errorMessage = '';
+    });
 
     try {
-      final response = await http.get(Uri.parse(url));
-      
+      final response = await http.get(Uri.parse(
+          'https://api.openweathermap.org/data/2.5/weather?q=$city&appid=$apiKey&units=metric'));
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         setState(() {
           weatherData = {
             'city': city,
-            'temp': '${data['main']['temp'].round()}°C',
-            'feels_like': '${data['main']['feels_like'].round()}°C',
-            'condition': data['weather'][0]['main'],
-            'icon': _getWeatherIcon(data['weather'][0]['main']),
-            'color': _getWeatherColor(data['weather'][0]['main']),
+            'temp': data['main']['temp']?.toDouble() ?? 0.0,
+            'condition': data['weather'][0]['main'] ?? 'N/A',
+            'clouds': data['clouds']['all']?.toString() ?? '0',
+            'humidity': data['main']['humidity']?.toString() ?? '0',
+            'pressure': data['main']['pressure']?.toString() ?? '0',
           };
+          isLoading = false;
+          currentCity = city;
+          _cityController.clear();
+        });
+      } else if (response.statusCode == 404) {
+        setState(() {
+          errorMessage = 'City "$city" not found. Please try another location.';
           isLoading = false;
         });
       } else {
+        final data = json.decode(response.body);
         setState(() {
-          errorMessage = 'Failed to load weather data';
+          errorMessage = data['message'] ?? 'Failed to load weather data';
           isLoading = false;
         });
       }
     } catch (e) {
       setState(() {
-        errorMessage = 'Connection error';
+        errorMessage = 'Connection error. Please check your internet.';
         isLoading = false;
       });
     }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      color: Colors.white,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(
+          minWidth: double.infinity,
+          maxHeight: 300, // Set a maximum height
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SectionHeader(
+                icon: Icons.cloud,
+                title: 'WEATHER UPDATES',
+              ),
+              const SizedBox(height: 16),
+              
+              TextField(
+                controller: _cityController,
+                decoration: InputDecoration(
+                  hintText: 'Enter city name',
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide.none,
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 12,
+                  ),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.search, color: Colors.blue, size: 20),
+                    onPressed: () {
+                      if (_cityController.text.isNotEmpty) {
+                        _fetchWeatherData(_cityController.text);
+                      }
+                    },
+                  ),
+                  errorText: errorMessage.isNotEmpty && !isLoading ? errorMessage : null,
+                ),
+                onSubmitted: (value) {
+                  if (value.isNotEmpty) {
+                    _fetchWeatherData(value);
+                  }
+                },
+              ),
+              const SizedBox(height: 16),
+              
+              if (isLoading)
+                const Expanded(
+                  child: Center(
+                    child: CircularProgressIndicator(
+                      color: Colors.blue,
+                    ),
+                  ),
+                )
+              else if (weatherData != null)
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: _buildWeatherDisplay(),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWeatherDisplay() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // City name with location icon
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.location_on, color: Colors.blue, size: 16),
+              const SizedBox(width: 6),
+              Text(
+                currentCity,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          
+          // Temperature display
+          Text(
+            '${weatherData!['temp'].toStringAsFixed(1)}°C',
+            style: const TextStyle(
+              fontSize: 32,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          
+          // Weather condition with icon
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                _getWeatherIcon(weatherData!['condition']),
+                size: 20,
+                color: _getWeatherColor(weatherData!['condition']),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                weatherData!['condition'],
+                style: const TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          
+          // Weather details
+          Wrap(
+            alignment: WrapAlignment.spaceEvenly,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildWeatherDetail('Clouds', '${weatherData!['clouds']}%', Icons.cloud),
+              _buildWeatherDetail('Humidity', '${weatherData!['humidity']}%', Icons.water_drop),
+              _buildWeatherDetail('Pressure', '${weatherData!['pressure']} hPa', Icons.speed),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWeatherDetail(String label, String value, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 20, color: Colors.blue),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 10,
+              color: Colors.grey,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   IconData _getWeatherIcon(String condition) {
@@ -78,103 +268,8 @@ class _WeatherMonitoringState extends State<WeatherMonitoring> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-      ),
-      color: Colors.white,
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SectionHeader(
-              icon: Icons.cloud,
-              title: 'WEATHER MONITORING',
-            ),
-            const SizedBox(height: 20),
-            if (isLoading)
-              const Center(child: CircularProgressIndicator())
-            else if (errorMessage.isNotEmpty)
-              Center(
-                child: Text(
-                  errorMessage,
-                  style: TextStyle(color: Colors.red[700]),
-                ),
-              )
-            else
-              _buildWeatherDisplay(),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildWeatherDisplay() {
-    final color = weatherData!['color'];
-    
-    return Container(
-      height: 250,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            color.withOpacity(0.1),
-            color.withOpacity(0.05),
-          ],
-        ),
-      ),
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // City and condition
-            Text(
-              weatherData!['city'],
-              style: const TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: Colors.black87,
-              ),
-            ),
-            const SizedBox(height: 8),
-            
-            // Weather icon and temperature
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(
-                  weatherData!['icon'],
-                  size: 60,
-                  color: color,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  weatherData!['temp'],
-                  style: const TextStyle(
-                    fontSize: 48,
-                    fontWeight: FontWeight.w300,
-                  ),
-                ),
-              ],
-            ),
-            
-            // Feels like
-            Text(
-              'Feels like ${weatherData!['feels_like']}',
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey[600],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+  void dispose() {
+    _cityController.dispose();
+    super.dispose();
   }
 }

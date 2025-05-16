@@ -1,9 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:animations/animations.dart';
 import 'package:radar_dashboard/screens/dashboard_screen.dart';
 import 'package:radar_dashboard/screens/emergencies_screen.dart';
+import 'package:radar_dashboard/screens/mapping_screen.dart';
+import 'package:radar_dashboard/screens/settings_screen.dart';
 
 class NavigationScreen extends StatefulWidget {
-  const NavigationScreen({super.key});
+  final bool isDarkMode;
+  final ValueChanged<bool> onToggleTheme;
+
+  const NavigationScreen({
+    super.key,
+    required this.isDarkMode,
+    required this.onToggleTheme,
+  });
 
   @override
   State<NavigationScreen> createState() => _NavigationScreenState();
@@ -13,150 +23,167 @@ class _NavigationScreenState extends State<NavigationScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int _selectedIndex = 0;
 
-  final List<NavigationItem> _navigationItems = [
-    NavigationItem(
-      title: 'Dashboard',
-      icon: Icons.dashboard_outlined,
-      screenBuilder: (onMenuPressed) => DashboardScreen(onMenuPressed: onMenuPressed),
-    ),
-    NavigationItem(
-      title: 'Incident Reports',
-      icon: Icons.emergency_outlined,
-      screenBuilder: (onMenuPressed) => EmergenciesScreen(onMenuPressed: onMenuPressed),
-      hasFloatingAction: true,
-    ),
-    NavigationItem(
-      title: 'Hazard Mapping',
-      icon: Icons.map_outlined,
-      screenBuilder: (_) => const Placeholder(), // Replace with MappingScreen()
-    ),
-    NavigationItem(
-      title: 'Analytics',
-      icon: Icons.analytics_outlined,
-      screenBuilder: (_) => const Placeholder(), // Replace with AnalyticsScreen()
-    ),
-    NavigationItem(
-      title: 'System Settings',
-      icon: Icons.settings_outlined,
-      screenBuilder: (_) => const Placeholder(), // Replace with SettingsScreen()
-    ),
-  ];
+  late final List<NavigationItem> _navigationItems;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _navigationItems = [
+      NavigationItem(
+        title: 'Dashboard',
+        icon: Icons.dashboard_outlined,
+        screenBuilder: (onMenuPressed) => DashboardScreen(onMenuPressed: onMenuPressed),
+      ),
+      NavigationItem(
+        title: 'Incident Reports',
+        icon: Icons.emergency_outlined,
+        screenBuilder: (onMenuPressed) => EmergenciesScreen(onMenuPressed: onMenuPressed),
+        hasFloatingAction: true,
+      ),
+      // NavigationItem(
+      //   title: 'Hazard Mapping',
+      //   icon: Icons.map_outlined,
+      //   screenBuilder: (onMenuPressed) => HazardMappingScreen(onMenuPressed: onMenuPressed),
+      // ),
+      // NavigationItem(
+      //   title: 'Analytics',
+      //   icon: Icons.analytics_outlined,
+      //   screenBuilder: (_) => const Placeholder(),
+      // ),
+      NavigationItem(
+        title: 'System Settings',
+        icon: Icons.settings_outlined,
+        screenBuilder: (onMenuPressed) => SettingsScreen(
+          onMenuPressed: onMenuPressed,
+          isDarkMode: widget.isDarkMode,
+          onToggleTheme: widget.onToggleTheme,
+        ),
+      ),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       key: _scaffoldKey,
       drawer: _buildAppDrawer(),
-      body: _buildCurrentScreen(),
+      body: _buildCurrentScreenWithTransition(),
       floatingActionButton: _buildFloatingActionButton(),
     );
   }
 
-  Widget _buildCurrentScreen() {
-    final item = _navigationItems[_selectedIndex];
-    return item.screenBuilder(() => _scaffoldKey.currentState?.openDrawer());
+  Widget _buildCurrentScreenWithTransition() {
+    return PageTransitionSwitcher(
+      duration: const Duration(milliseconds: 300),
+      transitionBuilder: (child, primaryAnimation, secondaryAnimation) {
+        return FadeTransition(opacity: primaryAnimation, child: child);
+      },
+      child: KeyedSubtree(
+        key: ValueKey<int>(_selectedIndex),
+        child: _navigationItems[_selectedIndex].screenBuilder(() {
+          _scaffoldKey.currentState?.openDrawer();
+        }),
+      ),
+    );
   }
 
   Widget? _buildFloatingActionButton() {
     if (!_navigationItems[_selectedIndex].hasFloatingAction) return null;
-    
+
     return FloatingActionButton(
       onPressed: _handleNewEmergency,
       child: const Icon(Icons.add_alert_outlined),
     );
   }
 
- Widget _buildAppDrawer() {
-  return Drawer(
-    backgroundColor: const Color(0xFF2C5282), // Blue background for entire drawer
-    elevation: 4,
-    child: Column(
-      children: [
-        _buildDrawerHeader(),
-        Expanded(
-          child: Container(
-            decoration: const BoxDecoration(
-              color: Color(0xFFF9F9F9), // Light body background
-              borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
-            ),
-            child: ListView(
-              padding: EdgeInsets.zero,
-              children: [
-                ..._navigationItems.map((item) => _buildDrawerItem(item)),
-                const Divider(color: Colors.grey, height: 32, thickness: 0.5),
-                _buildDrawerItem(
-                  NavigationItem(
-                    title: 'Logout',
-                    icon: Icons.exit_to_app_outlined,
-                    screenBuilder: (_) => const SizedBox(),
-                    isLogout: true,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
-    ),
-  );
-}
-
-
-Widget _buildDrawerHeader() {
-  return DrawerHeader(
-    decoration: const BoxDecoration(
-      color: Color(0xFF2C5282),
-    ),
-    child: Align(
-      alignment: Alignment.centerLeft,
+  Widget _buildAppDrawer() {
+    return Drawer(
+      backgroundColor: const Color(0xFF2C5282),
+      elevation: 4,
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center, // Vertically center all text
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'PROJECT RADAR',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 0.5,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Emergency Response System',
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.85),
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 10),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.blueGrey[50],
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: const Text(
-              'VERSION 1.0.0',
-              style: TextStyle(
-                color: Colors.blueGrey,
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
+          _buildDrawerHeader(),
+          Expanded(
+            child: Container(
+              decoration: const BoxDecoration(
+                color: Color(0xFFF9F9F9),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
+              ),
+              child: ListView(
+                padding: EdgeInsets.zero,
+                children: [
+                  ..._navigationItems.map(_buildDrawerItem),
+                  const Divider(color: Colors.grey, height: 32, thickness: 0.5),
+                  // _buildDrawerItem(
+                  //   NavigationItem(
+                  //     title: 'Logout',
+                  //     icon: Icons.exit_to_app_outlined,
+                  //     screenBuilder: (_) => const SizedBox(),
+                  //     isLogout: true,
+                  //   ),
+                  // ),
+                ],
               ),
             ),
           ),
         ],
       ),
-    ),
-  );
-}
+    );
+  }
 
+  Widget _buildDrawerHeader() {
+    return DrawerHeader(
+      decoration: const BoxDecoration(color: Color(0xFF2C5282)),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'PROJECT RADAR',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.5,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Emergency Response System',
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.85),
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.blueGrey[50],
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: const Text(
+                'VERSION 1.0.0',
+                style: TextStyle(
+                  color: Colors.blueGrey,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildDrawerItem(NavigationItem item) {
     final isSelected = !item.isLogout && _navigationItems.indexOf(item) == _selectedIndex;
-    
+
     return ListTile(
       leading: Icon(
         item.icon,
@@ -186,7 +213,7 @@ Widget _buildDrawerHeader() {
 
   void _showLogoutDialog() {
     showDialog(
-      context: _scaffoldKey.currentContext!,
+      context: context,
       builder: (context) => AlertDialog(
         title: const Text('Logout'),
         content: const Text('Are you sure you want to logout?'),
@@ -205,14 +232,15 @@ Widget _buildDrawerHeader() {
   }
 
   void _performLogout() {
-    Navigator.pop(_scaffoldKey.currentContext!);
-    Navigator.pop(_scaffoldKey.currentContext!);
-    // Add your logout logic here
+    Navigator.of(context)
+      ..pop()
+      ..pop();
+    // TODO: Add actual logout logic here
   }
 
   void _handleNewEmergency() {
     showModalBottomSheet(
-      context: _scaffoldKey.currentContext!,
+      context: context,
       builder: (context) => Container(
         padding: const EdgeInsets.all(20),
         child: const Text('New Emergency Report Form'),
