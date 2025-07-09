@@ -1,18 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:animations/animations.dart';
-import 'package:radar_dashboard/screens/dashboard_screen.dart';
+import 'package:radar_dashboard/dashboard/dashboard_screen.dart';
+import 'package:radar_dashboard/screens/analytics_screen.dart';
 import 'package:radar_dashboard/screens/emergencies_screen.dart';
 import 'package:radar_dashboard/screens/mapping_screen.dart';
 import 'package:radar_dashboard/screens/settings_screen.dart';
+import 'package:radar_dashboard/screens/users_management_screen.dart';
 
 class NavigationScreen extends StatefulWidget {
   final bool isDarkMode;
   final ValueChanged<bool> onToggleTheme;
+  final String userRole; // <-- NEW
 
   const NavigationScreen({
     super.key,
     required this.isDarkMode,
     required this.onToggleTheme,
+    required this.userRole, // <-- NEW
   });
 
   @override
@@ -29,7 +33,8 @@ class _NavigationScreenState extends State<NavigationScreen> {
   void initState() {
     super.initState();
 
-    _navigationItems = [
+    // All items
+    final allItems = [
       NavigationItem(
         title: 'Dashboard',
         icon: Icons.dashboard_outlined,
@@ -41,15 +46,20 @@ class _NavigationScreenState extends State<NavigationScreen> {
         screenBuilder: (onMenuPressed) => EmergenciesScreen(onMenuPressed: onMenuPressed),
         hasFloatingAction: true,
       ),
-      // NavigationItem(
-      //   title: 'Hazard Mapping',
-      //   icon: Icons.map_outlined,
-      //   screenBuilder: (onMenuPressed) => HazardMappingScreen(onMenuPressed: onMenuPressed),
-      // ),
+      NavigationItem(
+        title: 'Hazard Mapping',
+        icon: Icons.map_outlined,
+        screenBuilder: (onMenuPressed) => HazardMappingScreen(onMenuPressed: onMenuPressed),
+      ),
       // NavigationItem(
       //   title: 'Analytics',
       //   icon: Icons.analytics_outlined,
-      //   screenBuilder: (_) => const Placeholder(),
+      //   screenBuilder: (_) => AnalyticsScreen(),
+      // ),
+      // NavigationItem(
+      //   title: 'Users',
+      //   icon: Icons.people_alt_outlined,
+      //   screenBuilder: (_) => const UsersManagementScreen(),
       // ),
       NavigationItem(
         title: 'System Settings',
@@ -61,6 +71,15 @@ class _NavigationScreenState extends State<NavigationScreen> {
         ),
       ),
     ];
+
+    // Filter based on role
+    if (widget.userRole == 'admin') {
+      _navigationItems = allItems;
+    } else {
+      _navigationItems = allItems.where((item) =>
+        item.title == 'Dashboard' || item.title == 'Incident Reports'
+      ).toList();
+    }
   }
 
   @override
@@ -115,14 +134,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                 children: [
                   ..._navigationItems.map(_buildDrawerItem),
                   const Divider(color: Colors.grey, height: 32, thickness: 0.5),
-                  // _buildDrawerItem(
-                  //   NavigationItem(
-                  //     title: 'Logout',
-                  //     icon: Icons.exit_to_app_outlined,
-                  //     screenBuilder: (_) => const SizedBox(),
-                  //     isLogout: true,
-                  //   ),
-                  // ),
+                  // Add logout if needed
                 ],
               ),
             ),

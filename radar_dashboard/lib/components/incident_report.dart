@@ -17,10 +17,9 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
   String _searchQuery = '';
   String _selectedType = 'All';
   String _capitalize(String input) {
-  if (input.isEmpty) return input;
-  return input[0].toUpperCase() + input.substring(1);
-}
-
+    if (input.isEmpty) return input;
+    return input[0].toUpperCase() + input.substring(1);
+  }
 
   final List<String> _incidentTypes = [
     'All',
@@ -185,6 +184,9 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                               DataColumn(
                                 label: Text('TIME', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                               ),
+                              DataColumn(
+                                label: Text('STATUS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                              ),
                             ],
                             rows: filtered.map((doc) => _buildDataRow(doc)).toList(),
                           ),
@@ -209,28 +211,55 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
     final location = data['address']?.toString() ?? 'Unknown';
     final rawType = data['incidentType']?.toString() ?? '';
     final normalizedType = rawType.toLowerCase();
+    final status = data['status']?.toString() ?? 'Pending'; // Default to 'Pending' if status is not set
 
     final knownTypes = ['fire', 'accident', 'flood'];
     final incidentType = knownTypes.contains(normalizedType)
         ? _capitalize(normalizedType)
         : 'Others';
 
+    // Determine status color
+    Color statusColor = Colors.grey; // Default color
+    if (status.toLowerCase() == 'resolved') {
+      statusColor = Colors.green;
+    } else if (status.toLowerCase() == 'in progress') {
+      statusColor = Colors.yellow;
+    } else if (status.toLowerCase() == 'pending') {
+      statusColor = Colors.blueGrey;
+    }
 
     return DataRow(
       cells: [
         DataCell(Text(doc.id.substring(0, 4), style: const TextStyle(fontSize: 12, fontFamily: 'RobotoMono'))),
-        DataCell(SizedBox(width: 250, child: Text(location, style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis, maxLines: 2))),
+        DataCell(SizedBox(width: 170, child: Text(location, style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis, maxLines: 2))),
         DataCell(SizedBox(
-          width: 100,
+          width: 50,
           child: Text(
             incidentType,
             style: const TextStyle(fontSize: 12),
             overflow: TextOverflow.ellipsis,
           ),
         )),
-
         DataCell(Text(date, style: const TextStyle(fontSize: 12))),
         DataCell(Text(time, style: const TextStyle(fontSize: 12))),
+        DataCell(
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: statusColor.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: statusColor),
+            ),
+            child: Text(
+              _capitalize(status),
+              style: TextStyle(
+                fontSize: 12,
+                color: statusColor,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ),
       ],
     );
   }

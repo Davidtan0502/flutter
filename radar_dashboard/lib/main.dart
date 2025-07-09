@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:radar_dashboard/login/login_register_screen.dart';
 import 'package:radar_dashboard/navigation/main_navigation.dart';
-import 'package:radar_dashboard/widgets/loading_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'firebase_options.dart';
 
 Future<void> main() async {
@@ -59,19 +59,19 @@ class _ProjectRadarAppState extends State<ProjectRadarApp> {
       ),
       themeMode: isDarkMode ? ThemeMode.dark : ThemeMode.light,
       debugShowCheckedModeBanner: false,
-      home: FutureBuilder(
-        future: Future.delayed(const Duration(seconds: 2)),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const LoadingScreen();
-          } else {
-            return NavigationScreen(
+      home: const LoginRegisterScreen(), // ⬅️ Show login screen first
+      routes: {
+        '/admin-dashboard': (context) => NavigationScreen(
               isDarkMode: isDarkMode,
               onToggleTheme: toggleTheme,
-            );
-          }
-        },
-      ),
+              userRole: 'admin',
+            ),
+        '/user-dashboard': (context) => NavigationScreen(
+              isDarkMode: isDarkMode,
+              onToggleTheme: toggleTheme,
+              userRole: 'user',
+            ),
+      },
     );
   }
 }
