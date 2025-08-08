@@ -14,6 +14,18 @@ class EmergenciesScreen extends StatefulWidget {
 class _EmergenciesScreenState extends State<EmergenciesScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
+  Color _getStatusColor(String status) {
+  switch (status.toLowerCase()) {
+    case 'resolved':
+      return Colors.green;
+    case 'in progress':
+      return Colors.orange;
+    case 'pending':
+      return Colors.amber;
+    default:
+      return Colors.grey;
+  }
+}
 
   @override
   void initState() {
@@ -206,121 +218,192 @@ class _EmergenciesScreenState extends State<EmergenciesScreen> {
     }).toList();
   }
 
-  void _showEmergencyDetails(QueryDocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
-    final timestamp = data['timestamp'] as Timestamp?;
-    
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.2),
-              blurRadius: 20,
-              spreadRadius: 0,
-            ),
-          ],
-        ),
-        padding: const EdgeInsets.all(24),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Center(
-                child: Container(
-                  width: 60,
-                  height: 6,
-                  margin: const EdgeInsets.only(bottom: 16),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[300],
-                    borderRadius: BorderRadius.circular(3),
-                  ),
-                ),
+void _showEmergencyDetails(QueryDocumentSnapshot doc) {
+  final data = doc.data() as Map<String, dynamic>;
+  final timestamp = data['timestamp'] as Timestamp?;
+  String currentStatus = (data['status'] ?? 'pending').toString().toLowerCase();
+  final statusOptions = ['pending', 'in progress', 'resolved'];
+
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setModalState) {
+        return Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.2),
+                blurRadius: 20,
               ),
-              Row(
-                children: [
-                  Text(
-                    'Incident Details',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.blue[800],
-                    ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              _buildDetailCard(
-                icon: Icons.warning_amber_rounded,
-                title: data['incidentType']?.toString() ?? 'Unknown type',
-                iconColor: _getIncidentColor(data['incidentType']),
-              ),
-              const SizedBox(height: 16),
-              _buildDetailSection(
-                icon: Icons.location_on_outlined,
-                title: 'Location',
-                content: data['address'] ?? 'Unknown location',
-              ),
-              _buildDetailSection(
-                icon: Icons.access_time,
-                title: 'Reported',
-                content: timestamp != null 
-                    ? DateFormat('MMMM d, y - h:mm a').format(timestamp.toDate())
-                    : 'Unknown time',
-              ),
-              _buildDetailSection(
-                icon: Icons.phone,
-                title: 'Contact',
-                content: data['contactNumber'] ?? 'Not provided',
-              ),
-              _buildDetailSection(
-                icon: Icons.person,
-                title: 'Reporter',
-                content: data['name'] ?? 'Anonymous',
-              ),
-              if (data['description'] != null) ...[
-                const SizedBox(height: 16),
-                _buildDetailSection(
-                  icon: Icons.description,
-                  title: 'Description',
-                  content: data['description']!.toString(),
-                  isDescription: true,
-                ),
-              ],
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue[800],
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('CLOSE'),
-                ),
-              ),
-              const SizedBox(height: 8),
             ],
           ),
-        ),
-      ),
-    );
-  }
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 60,
+                    height: 6,
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+                ),
+                Row(
+                  children: [
+                    Text(
+                      'Incident Details',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue[800],
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _buildDetailCard(
+                  icon: Icons.warning_amber_rounded,
+                  title: data['incidentType']?.toString() ?? 'Unknown type',
+                  iconColor: _getIncidentColor(data['incidentType']),
+                ),
+                const SizedBox(height: 20),
+                _buildDetailSection(
+                  icon: Icons.location_on_outlined,
+                  title: 'Location',
+                  content: data['address'] ?? 'Unknown location',
+                ),
+                _buildDetailSection(
+                  icon: Icons.access_time,
+                  title: 'Reported',
+                  content: timestamp != null
+                      ? DateFormat('MMMM d, y - h:mm a').format(timestamp.toDate())
+                      : 'Unknown time',
+                ),
+                _buildDetailSection(
+                  icon: Icons.phone,
+                  title: 'Contact',
+                  content: data['contactNumber'] ?? 'Not provided',
+                ),
+                _buildDetailSection(
+                  icon: Icons.person,
+                  title: 'Reporter',
+                  content: data['name'] ?? 'Anonymous',
+                ),
+                if (data['description'] != null) ...[
+                  const SizedBox(height: 16),
+                  _buildDetailSection(
+                    icon: Icons.description,
+                    title: 'Description',
+                    content: data['description']!.toString(),
+                    isDescription: true,
+                  ),
+                ],
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Icon(Icons.flag, size: 20, color: Colors.blue[800]),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Status',
+                      style: TextStyle(
+                        color: Colors.blue[800],
+                        fontWeight: FontWeight.w600,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 128, vertical: 6),
+                  margin: const EdgeInsets.only(left: 4),
+                  decoration: BoxDecoration(
+                    color: _getStatusColor(currentStatus).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: _getStatusColor(currentStatus),
+                      width: 1.5,
+                    ),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: currentStatus,
+                      icon: const Icon(Icons.keyboard_arrow_down),
+                      dropdownColor: Colors.white,
+                      style: TextStyle(
+                        color: _getStatusColor(currentStatus),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                      onChanged: (value) async {
+                        if (value != null && value != currentStatus) {
+                          await FirebaseFirestore.instance
+                              .collection('incidents')
+                              .doc(doc.id)
+                              .update({'status': value});
+                          setModalState(() {
+                            currentStatus = value;
+                          });
+                          setState(() {}); // refresh outer screen
+                        }
+                      },
+                      items: statusOptions.map((status) {
+                        return DropdownMenuItem<String>(
+                          value: status,
+                          child: Text(
+                            status.toUpperCase(),
+                            style: TextStyle(
+                              color: _getStatusColor(status),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.check),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue[800],
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () => Navigator.pop(context),
+                    label: const Text('CLOSE'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    ),
+  );
+}
+
+
 
   Widget _buildDetailCard({
     required IconData icon,
@@ -538,4 +621,5 @@ class _EmergencyCard extends StatelessWidget {
         return Colors.purple;
     }
   }
+
 }

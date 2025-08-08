@@ -1,172 +1,192 @@
+
+import 'dart:math';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:syncfusion_flutter_charts/charts.dart';
 import 'package:intl/intl.dart';
+import 'package:syncfusion_flutter_charts/charts.dart';
 
 class AnalyticsScreen extends StatefulWidget {
-  const AnalyticsScreen({super.key});
+  final VoidCallback onMenuPressed;
+
+  const AnalyticsScreen({super.key, required this.onMenuPressed});
 
   @override
-  _AnalyticsScreenState createState() => _AnalyticsScreenState();
+  State<AnalyticsScreen> createState() => _AnalyticsScreenState();
 }
 
 class _AnalyticsScreenState extends State<AnalyticsScreen> {
-  // Sample data - replace with real API calls
-  List<EmergencyAlert> activeAlerts = [
-    EmergencyAlert("Fire outbreak", "Downtown", "High", Icons.local_fire_department, Colors.red),
-    EmergencyAlert("Medical emergency", "Central Hospital", "Medium", Icons.medical_services, Colors.orange),
-    EmergencyAlert("Power outage", "North District", "Low", Icons.power, Colors.amber),
-  ];
-  
-  List<EmergencyCase> weeklyCases = [
-    EmergencyCase("Mon", 12),
-    EmergencyCase("Tue", 18),
-    EmergencyCase("Wed", 8),
-    EmergencyCase("Thu", 15),
-    EmergencyCase("Fri", 22),
-    EmergencyCase("Sat", 14),
-    EmergencyCase("Sun", 9),
-  ];
-  
-  List<ResponseTime> responseTimes = [
-    ResponseTime("Medical", 12.5),
-    ResponseTime("Fire", 8.2),
-    ResponseTime("Police", 10.7),
-    ResponseTime("Rescue", 15.3),
-  ];
+  List<EmergencyAlert> activeAlerts = [];
+  List<EmergencyCase> weeklyCases = [];
+  List<ResponseTime> responseTimes = [];
+  int respondersActive = 0;
+  int resolvedToday = 0;
+  int totalIncidents = 0;
+  Map<String, int> typeCounts = {
+    'Fire': 0,
+    'Accident': 0,
+    'Flood': 0,
+    'Other': 0,
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    fetchAnalyticsData();
+  }
+
+  Future<void> fetchAnalyticsData() async {
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final weekStart = now.subtract(Duration(days: now.weekday - 1));
+
+    final alertsRef = FirebaseFirestore.instance.collection('alerts');
+    final incidentsRef = FirebaseFirestore.instance.collection('incidents');
+
+    final alertsSnapshot = await alertsRef.get();
+    final alertsData = alertsSnapshot.docs;
+
+    final activeAlertsList = alertsData.where((doc) => doc['status'] == 'active').map((doc) {
+      final data = doc.data();
+      final severity = data['severity'] ?? 'Low';
+      return EmergencyAlert(
+        data['title'] ?? 'Unknown',
+        data['location'] ?? 'Unknown',
+        severity,
+        severity == 'High' ? Icons.local_fire_department : severity == 'Medium' ? Icons.medical_services : Icons.power,
+        severity == 'High' ? Colors.red : severity == 'Medium' ? Colors.orange : Colors.amber,
+      );
+    }).toList();
+
+    final responders = alertsData.map((doc) => doc['responderId']).toSet().length;
+
+    final resolvedTodaySnapshot = await alertsRef
+        .where('status', isEqualTo: 'resolved')
+        .where('resolvedAt', isGreaterThanOrEqualTo: Timestamp.fromDate(todayStart))
+        .get();
+
+    final weeklySnapshot = await alertsRef.where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(weekStart)).get();
+    final Map<String, int> dayCounts = {
+      'Mon': 0, 'Tue': 0, 'Wed': 0, 'Thu': 0, 'Fri': 0, 'Sat': 0, 'Sun': 0
+    };
+    for (var doc in weeklySnapshot.docs) {
+      final date = (doc['timestamp'] as Timestamp).toDate();
+      final day = DateFormat('E').format(date);
+      if (dayCounts.containsKey(day)) dayCounts[day] = dayCounts[day]! + 1;
+    }
+
+    final allIncidents = await incidentsRef.get();
+    final incidentTypeCounts = {
+      'Fire': 0,
+      'Accident': 0,
+      'Flood': 0,
+      'Other': 0,
+    };
+    for (var doc in allIncidents.docs) {
+      final type = doc['incidentType'] ?? '';
+      if (type == 'Fire' || type == 'Accident' || type == 'Flood') {
+        incidentTypeCounts[type] = incidentTypeCounts[type]! + 1;
+      } else {
+        incidentTypeCounts['Other'] = incidentTypeCounts['Other']! + 1;
+      }
+    }
+
+    final incidentsWithTimestamps = alertsData.where((doc) => doc['respondedAt'] != null).toList();
+    final responseDurations = incidentsWithTimestamps.map((doc) {
+      final created = (doc['timestamp'] as Timestamp).toDate();
+      final responded = (doc['respondedAt'] as Timestamp).toDate();
+      return responded.difference(created).inMinutes.toDouble();
+    }).toList();
+    final averageResponse = responseDurations.isNotEmpty
+        ? responseDurations.reduce((a, b) => a + b) / responseDurations.length
+        : 0.0;
+
+    setState(() {
+      activeAlerts = activeAlertsList;
+      weeklyCases = dayCounts.entries.map((e) => EmergencyCase(e.key, e.value)).toList();
+      responseTimes = [ResponseTime("Avg Response", averageResponse)];
+      respondersActive = responders;
+      resolvedToday = resolvedTodaySnapshot.size;
+      totalIncidents = allIncidents.size;
+      typeCounts = incidentTypeCounts;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey[100],
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Header
-            Padding(
-              padding: const EdgeInsets.only(bottom: 16.0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Analytics Dashboard',
-                    style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-                  ),
-                  Row(
-                    children: [
-                      Icon(Icons.refresh, color: Colors.blue),
-                      SizedBox(width: 8),
-                      Text(
-                        'Last updated: ${DateFormat('HH:mm:ss').format(DateTime.now())}',
-                        style: TextStyle(color: Colors.grey),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            
-            // Overview Cards
-            Wrap(
-              spacing: 16,
-              runSpacing: 16,
-              children: [
-                _buildStatCard("Active Emergencies", "18", Icons.warning, Colors.orange),
-                _buildStatCard("Responders Active", "42", Icons.people, Colors.blue),
-                _buildStatCard("Avg. Response Time", "9.2 min", Icons.timer, Colors.green),
-                _buildStatCard("Resolved Today", "23", Icons.check_circle, Colors.purple),
-              ],
-            ),
-            
-            SizedBox(height: 24),
-            
-            // Main Content
-            Expanded(
-              child: Row(
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF2C5282),
+        leading: IconButton(
+          icon: const Icon(Icons.menu, color: Colors.white),
+          onPressed: widget.onMenuPressed,
+        ),
+        title: const Text(
+          'Analytics Dashboard',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
+        centerTitle: true,
+      ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          return SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Left Column
-                  Expanded(
-                    flex: 2,
-                    child: Column(
-                      children: [
-                        // Active Alerts
-                        _buildActiveAlertsCard(),
-                        SizedBox(height: 16),
-                        // Response Times Chart
-                        _buildResponseTimesChart(),
-                      ],
-                    ),
-                  ),
-                  
-                  SizedBox(width: 16),
-                  
-                  // Right Column
-                  Expanded(
-                    flex: 3,
-                    child: Column(
-                      children: [
-                        // Cases Over Time Chart
-                        _buildCasesOverTimeChart(),
-                        SizedBox(height: 16),
-                        // Map and Details
-                        _buildMapAndDetails(),
-                      ],
-                    ),
-                  ),
+                  _buildTopStats(),
+                  const SizedBox(height: 24),
+                  _buildChartsSection(),
                 ],
               ),
             ),
-          ],
-        ),
+          );
+        },
       ),
+    );
+  }
+
+  Widget _buildTopStats() {
+    return Wrap(
+      spacing: 16,
+      runSpacing: 16,
+      children: [
+        _buildStatCard("Active Emergencies", activeAlerts.length.toString(), Icons.warning, Colors.orange),
+        _buildStatCard("Responders Active", respondersActive.toString(), Icons.people, Colors.blue),
+        _buildStatCard("Avg. Response Time", "${responseTimes.isNotEmpty ? responseTimes.first.minutes.toStringAsFixed(1) : "0.0"} min", Icons.timer, Colors.green),
+        _buildStatCard("Resolved Today", resolvedToday.toString(), Icons.check_circle, Colors.purple),
+        _buildStatCard("Total Incidents", totalIncidents.toString(), Icons.list_alt, Colors.teal),
+      ],
     );
   }
 
   Widget _buildStatCard(String title, String value, IconData icon, Color color) {
     return Container(
-      width: 200,
-      padding: EdgeInsets.all(16),
+      width: 250,
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black12,
-            blurRadius: 4,
-            offset: Offset(0, 2),
-          ),
-        ],
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 6)],
       ),
       child: Row(
         children: [
           Container(
-            padding: EdgeInsets.all(8),
+            padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: color.withOpacity(0.2),
+              color: color.withOpacity(0.1),
               shape: BoxShape.circle,
             ),
             child: Icon(icon, color: color),
           ),
-          SizedBox(width: 12),
+          const SizedBox(width: 16),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                title,
-                style: TextStyle(
-                  color: Colors.grey,
-                  fontSize: 12,
-                ),
-              ),
-              Text(
-                value,
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              Text(title, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 4),
+              Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             ],
           ),
         ],
@@ -174,235 +194,51 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     );
   }
 
-  Widget _buildActiveAlertsCard() {
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Active Alerts',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                Chip(
-                  label: Text('${activeAlerts.length} Active'),
-                  backgroundColor: Colors.red[50],
-                  labelStyle: TextStyle(color: Colors.red),
-                ),
-              ],
-            ),
-            SizedBox(height: 8),
-            ...activeAlerts.map((alert) => _buildAlertItem(alert)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAlertItem(EmergencyAlert alert) {
-    return Container(
-      margin: EdgeInsets.symmetric(vertical: 4),
-      padding: EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey[200]!),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: alert.color.withOpacity(0.2),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(alert.icon, color: alert.color),
-          ),
-          SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  alert.title,
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                Text(
-                  alert.location,
-                  style: TextStyle(color: Colors.grey, fontSize: 12),
-                ),
-              ],
-            ),
-          ),
-          Chip(
-            label: Text(alert.severity),
-            backgroundColor: alert.severity == "High"
-                ? Colors.red[50]
-                : alert.severity == "Medium"
-                    ? Colors.orange[50]
-                    : Colors.amber[50],
-            labelStyle: TextStyle(
-              color: alert.severity == "High"
-                  ? Colors.red
-                  : alert.severity == "Medium"
-                      ? Colors.orange
-                      : Colors.amber,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-Widget _buildResponseTimesChart() {
-  return Card(
-    elevation: 2,
-    child: Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Average Response Times',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          SizedBox(height: 8),
-          SizedBox(
-            height: 250,
-            child: SfCartesianChart(
-              primaryXAxis: CategoryAxis(),
-              series: <CartesianSeries>[
-                BarSeries<ResponseTime, String>(
-                  dataSource: responseTimes,
-                  xValueMapper: (ResponseTime time, _) => time.type,
-                  yValueMapper: (ResponseTime time, _) => time.minutes,
-                  color: Colors.blue,
-                  dataLabelSettings: DataLabelSettings(isVisible: true),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
-}
-
-Widget _buildCasesOverTimeChart() {
-  return Card(
-    elevation: 2,
-    child: Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Emergency Cases This Week',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              IconButton(
-                icon: Icon(Icons.calendar_today, size: 18),
-                onPressed: () {},
-              ),
-            ],
-          ),
-          SizedBox(height: 8),
-          SizedBox(
-            height: 300,
-            child: SfCartesianChart(
-              primaryXAxis: CategoryAxis(),
-              primaryYAxis: NumericAxis(minimum: 0),
-              series: <CartesianSeries>[
-                LineSeries<EmergencyCase, String>(
-                  dataSource: weeklyCases,
-                  xValueMapper: (EmergencyCase cases, _) => cases.day,
-                  yValueMapper: (EmergencyCase cases, _) => cases.count,
-                  color: Colors.red,
-                  markerSettings: MarkerSettings(isVisible: true),
-                  dataLabelSettings: DataLabelSettings(isVisible: true),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
-}
-
-  Widget _buildMapAndDetails() {
-    return Expanded(
-      child: Card(
-        elevation: 2,
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Emergency Map',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              SizedBox(height: 8),
-              // Placeholder for map - replace with actual map widget
-              Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.grey[200],
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.map, size: 48, color: Colors.grey),
-                        Text('Map visualization would appear here',
-                            style: TextStyle(color: Colors.grey)),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              SizedBox(height: 16),
-              // Quick actions
-              Row(
-                children: [
-                  _buildQuickActionButton(Icons.add_alert, "New Alert"),
-                  SizedBox(width: 8),
-                  _buildQuickActionButton(Icons.assignment, "Generate Report"),
-                  SizedBox(width: 8),
-                  _buildQuickActionButton(Icons.settings, "Settings"),
-                ],
+  Widget _buildChartsSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text("Emergency Cases This Week", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 300,
+          child: SfCartesianChart(
+            primaryXAxis: CategoryAxis(),
+            series: <CartesianSeries>[
+              LineSeries<EmergencyCase, String>(
+                dataSource: weeklyCases,
+                xValueMapper: (EmergencyCase data, _) => data.day,
+                yValueMapper: (EmergencyCase data, _) => data.count,
+                color: Colors.red,
+                markerSettings: const MarkerSettings(isVisible: true),
+                dataLabelSettings: const DataLabelSettings(isVisible: true),
               ),
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildQuickActionButton(IconData icon, String label) {
-    return Expanded(
-      child: OutlinedButton.icon(
-        icon: Icon(icon, size: 16),
-        label: Text(label),
-        onPressed: () {},
-        style: OutlinedButton.styleFrom(
-          padding: EdgeInsets.symmetric(vertical: 12),
+        const SizedBox(height: 32),
+        const Text("Incident Types Breakdown", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 300,
+          child: SfCircularChart(
+            legend: Legend(isVisible: true, overflowMode: LegendItemOverflowMode.wrap),
+            series: <CircularSeries>[
+              PieSeries<MapEntry<String, int>, String>(
+                dataSource: typeCounts.entries.toList(),
+                xValueMapper: (entry, _) => entry.key,
+                yValueMapper: (entry, _) => entry.value,
+                dataLabelMapper: (entry, _) => "${entry.key}: ${entry.value}",
+                dataLabelSettings: const DataLabelSettings(isVisible: true),
+              )
+            ],
+          ),
         ),
-      ),
+      ],
     );
   }
 }
 
-// Data models
 class EmergencyAlert {
   final String title;
   final String location;

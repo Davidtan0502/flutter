@@ -5,7 +5,6 @@ import 'package:radar_dashboard/screens/analytics_screen.dart';
 import 'package:radar_dashboard/screens/emergencies_screen.dart';
 import 'package:radar_dashboard/screens/mapping_screen.dart';
 import 'package:radar_dashboard/screens/settings_screen.dart';
-import 'package:radar_dashboard/screens/users_management_screen.dart';
 
 class NavigationScreen extends StatefulWidget {
   final bool isDarkMode;
@@ -51,11 +50,11 @@ class _NavigationScreenState extends State<NavigationScreen> {
         icon: Icons.map_outlined,
         screenBuilder: (onMenuPressed) => HazardMappingScreen(onMenuPressed: onMenuPressed),
       ),
-      // NavigationItem(
-      //   title: 'Analytics',
-      //   icon: Icons.analytics_outlined,
-      //   screenBuilder: (_) => AnalyticsScreen(),
-      // ),
+      NavigationItem(
+        title: 'Analytics',
+        icon: Icons.analytics_outlined,
+        screenBuilder: (onMenuPressed) => AnalyticsScreen(onMenuPressed: onMenuPressed)
+      ),
       // NavigationItem(
       //   title: 'Users',
       //   icon: Icons.people_alt_outlined,

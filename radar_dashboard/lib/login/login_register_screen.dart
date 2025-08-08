@@ -148,7 +148,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen>
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text('ROADWATCH',
+                        Text('RADAR: Rapid Action for Disaster Aid Resource',
                             style: Theme.of(context)
                                 .textTheme
                                 .headlineSmall
