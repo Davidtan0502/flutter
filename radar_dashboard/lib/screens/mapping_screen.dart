@@ -3,13 +3,13 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
-class HazardMappingScreen extends StatefulWidget {
+class MapMonitoringpingScreen extends StatefulWidget {
   final VoidCallback onMenuPressed;
 
-  const HazardMappingScreen({super.key, required this.onMenuPressed});
+  const MapMonitoringpingScreen({super.key, required this.onMenuPressed});
 
   @override
-  State<HazardMappingScreen> createState() => _HazardMappingScreenState();
+  State<MapMonitoringpingScreen> createState() => _MapMonitoringpingScreenState();
 }
 
 class HazardItem {
@@ -21,7 +21,7 @@ class HazardItem {
   HazardItem({required this.id, required this.type, required this.date, required this.location});
 }
 
-class _HazardMappingScreenState extends State<HazardMappingScreen> {
+class _MapMonitoringpingScreenState extends State<MapMonitoringpingScreen> {
   late GoogleMapController _googleMapController;
   final LatLng _manilaCenter = const LatLng(14.5995, 120.9842);
   final List<HazardItem> _hazardItems = [];

@@ -1,151 +1,117 @@
+// Hazard Map (Focused)
+// File: hazard_map.dart
+// Description: Lightweight Flutter widget that renders hazard zones on Google Maps.
+// Data sources supported:
+//  - Firestore collection 'hazard_zones' (each doc: {name, severity, coordinates: [ {lat, lng}, ... ], description, colorHex?})
+//  - Local GeoJSON (optional) — helper included
+// Dependencies (add to pubspec.yaml):
+//   google_maps_flutter: any
+//   cloud_firestore: any
+//   geojson: any (optional)
+
+import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:geocoding/geocoding.dart';
 
 class MapMonitoring extends StatefulWidget {
   const MapMonitoring({super.key});
+
+  /// If provided, the widget will read hazard zones from this path in Firestore.
+  final String firestoreCollection = 'hazard_zones';
 
   @override
   State<MapMonitoring> createState() => _MapMonitoringState();
 }
 
 class _MapMonitoringState extends State<MapMonitoring> {
-  // Constants
   static const LatLng _initialPosition = LatLng(14.5995, 120.9842);
-  static const double _initialZoom = 13.0;
-  static const double _mapHeight = 524.0;
-  static const Duration _geocodeCacheDuration = Duration(hours: 1);
-  static const Duration _markerCacheDuration = Duration(minutes: 30);
+  static const double _initialZoom = 12.0;
 
-  // State variables
-  final Set<Marker> _markers = {};
-  final Map<String, LatLng> _geocodingCache = {};
   GoogleMapController? _mapController;
-  Stream<QuerySnapshot>? _incidentsStream;
+  final Set<Polygon> _polygons = {};
+  final Map<String, Map<String, dynamic>> _zoneMeta = {};
+  StreamSubscription<QuerySnapshot>? _zonesSub;
 
   @override
   void initState() {
     super.initState();
-    _initializeMap();
+    _subscribeZones();
   }
 
-  Future<void> _initializeMap() async {
-    await _loadCachedMarkers();
-    _setupRealTimeIncidents();
+  void _subscribeZones() {
+    final col = FirebaseFirestore.instance.collection('hazard_zones');
+    _zonesSub = col.snapshots().listen((snap) {
+      _loadZonesFromSnapshot(snap.docs);
+    }, onError: (e) => debugPrint('Zones stream error: $e'));
   }
 
-  Future<void> _loadCachedMarkers() async {
-    // In a real app, you would load from cache manager
-    // For demo purposes, we'll start with empty markers  
-  }
-
-  void _setupRealTimeIncidents() {
-    _incidentsStream = FirebaseFirestore.instance
-        .collection('incidents')
-        .where('status', isNotEqualTo: 'resolved')
-        .snapshots();
-
-    _incidentsStream?.listen((snapshot) {
-      _processIncidents(snapshot.docs);
-    });
-  }
-
-  Future<void> _processIncidents(List<QueryDocumentSnapshot> docs) async {
-    final newMarkers = <Marker>{};
+  void _loadZonesFromSnapshot(List<QueryDocumentSnapshot> docs) {
+    final newPolys = <Polygon>{};
+    final newMeta = <String, Map<String, dynamic>>{};
 
     for (final doc in docs) {
-      final data = doc.data() as Map<String, dynamic>;
-      final position = await _getIncidentPosition(data);
-      
-      if (position != null) {
-        final marker = await _createIncidentMarker(doc.id, data, position);
-        newMarkers.add(marker);
+      try {
+        final data = doc.data() as Map<String, dynamic>;
+        final id = doc.id;
+        final name = data['name']?.toString() ?? id;
+        final severity = (data['severity'] ?? 'unknown').toString();
+        final description = data['description']?.toString() ?? '';
+
+        // Expect coordinates as a list of maps: [{"lat": x, "lng": y}, ...]
+        final coordsRaw = data['coordinates'];
+        if (coordsRaw == null || coordsRaw is! List) continue;
+
+        final points = <LatLng>[];
+        for (final p in coordsRaw) {
+          if (p is Map) {
+            final lat = (p['lat'] as num?)?.toDouble();
+            final lng = (p['lng'] as num?)?.toDouble();
+            if (lat != null && lng != null) points.add(LatLng(lat, lng));
+          }
+        }
+
+        if (points.length < 3) continue; // not a polygon
+
+        final color = _colorForSeverity(severity);
+
+        final poly = Polygon(
+          polygonId: PolygonId(id),
+          points: points,
+          fillColor: color.withOpacity(0.18),
+          strokeColor: color.withOpacity(0.8),
+          strokeWidth: 2,
+          consumeTapEvents: true,
+          onTap: () => _onZoneTap(id),
+        );
+
+        newPolys.add(poly);
+        newMeta[id] = {'name': name, 'severity': severity, 'description': description, 'color': color};
+      } catch (e) {
+        debugPrint('Error parsing zone ${doc.id}: $e');
       }
     }
 
     if (mounted) {
       setState(() {
-        _markers
+        _polygons
           ..clear()
-          ..addAll(newMarkers);
+          ..addAll(newPolys);
+        _zoneMeta
+          ..clear()
+          ..addAll(newMeta);
       });
     }
   }
 
-  Future<LatLng?> _getIncidentPosition(Map<String, dynamic> data) async {
-    // Try coordinates first
-    final coordinates = _parseCoordinates(data);
-    if (coordinates != null) return coordinates;
-
-    // Fall back to geocoding if address exists
-    if (data['address'] != null) {
-      return await _geocodeAddress(data['address'] as String);
-    }
-
-    return null;
-  }
-
-  LatLng? _parseCoordinates(Map<String, dynamic> data) {
-    try {
-      final lat = data['latitude'] as double? ?? 
-                 (data['latitude'] != null ? double.tryParse(data['latitude'].toString()) : null);
-      final lng = data['longitude'] as double? ?? 
-                 (data['longitude'] != null ? double.tryParse(data['longitude'].toString()) : null);
-
-      return (lat != null && lng != null) ? LatLng(lat, lng) : null;
-    } catch (e) {
-      debugPrint('Error parsing coordinates: $e');
-      return null;
-    }
-  }
-
-  Future<LatLng?> _geocodeAddress(String address) async {
-    if (_geocodingCache.containsKey(address)) {
-      return _geocodingCache[address];
-    }
-
-    try {
-      final locations = await locationFromAddress(address);
-      if (locations.isNotEmpty) {
-        final position = LatLng(locations.first.latitude, locations.first.longitude);
-        _geocodingCache[address] = position;
-        return position;
-      }
-    } catch (e) {
-      debugPrint('Geocoding failed for address: $address. Error: $e');
-    }
-    return null;
-  }
-
-  Future<Marker> _createIncidentMarker(String id, Map<String, dynamic> data, LatLng position) async {
-    return Marker(
-      markerId: MarkerId(id),
-      position: position,
-      infoWindow: InfoWindow(
-        title: data['incidentType']?.toString() ?? 'Incident',
-        snippet: data['address']?.toString() ?? 'No address provided',
-      ),
-      icon: await _getSeverityIcon(data['severity']?.toString() ?? 'unknown'),
-    );
-  }
-
-  Future<BitmapDescriptor> _getSeverityIcon(String severity) async {
-    // Simplified version - in production you might want to use pre-made assets
-    final color = _getSeverityColor(severity);
-    return BitmapDescriptor.defaultMarkerWithHue(
-      _colorToHue(color),
-    );
-  }
-
-  Color _getSeverityColor(String severity) {
+  Color _colorForSeverity(String severity) {
     switch (severity.toLowerCase()) {
       case 'critical':
         return Colors.red;
       case 'high':
         return Colors.orange;
       case 'medium':
-        return Colors.blue;
+        return Colors.amber;
       case 'low':
         return Colors.green;
       default:
@@ -153,68 +119,94 @@ class _MapMonitoringState extends State<MapMonitoring> {
     }
   }
 
-  double _colorToHue(Color color) {
-    // Convert color to HSV and return hue value
-    final hsl = HSLColor.fromColor(color);
-    return hsl.hue;
+  void _onZoneTap(String id) {
+    final meta = _zoneMeta[id];
+    if (meta == null) return;
+
+    showModalBottomSheet(context: context, builder: (ctx) {
+      return Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Container(width: 12, height: 12, color: meta['color'] as Color),
+              const SizedBox(width: 8),
+              Text(meta['name'] ?? 'Zone', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              const Spacer(),
+              Chip(label: Text((meta['severity'] ?? '').toString().toUpperCase())),
+            ]),
+            const SizedBox(height: 8),
+            Text(meta['description'] ?? ''),
+            const SizedBox(height: 12),
+            Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+              TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Close')),
+            ])
+          ],
+        ),
+      );
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Card(
       elevation: 4,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(24, 20, 24, 16),
-            child: Row(
-              children: [
-                Icon(Icons.map_rounded, size: 24),
-                SizedBox(width: 12),
-                Text(
-                  'MAP MONITORING',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Row(children: [
+            Icon(Icons.warning, size: 20),
+            SizedBox(width: 8),
+            Text('HAZARD MAP', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          ]),
+        ),
+        const Divider(height: 1),
+        SizedBox(
+          height: 420,
+          child: Stack(children: [
+            GoogleMap(
+              initialCameraPosition: CameraPosition(target: _initialPosition, zoom: _initialZoom),
+              polygons: _polygons,
+              onMapCreated: (ctrl) => _mapController = ctrl,
             ),
-          ),
-          const Divider(height: 1),
-          SizedBox(
-            height: _mapHeight,
-            child: GoogleMap(
-              initialCameraPosition: CameraPosition(
-                target: _initialPosition,
-                zoom: _initialZoom,
-              ),
-              mapType: MapType.normal,
-              myLocationEnabled: true,
-              myLocationButtonEnabled: true,
-              zoomControlsEnabled: false,
-              markers: _markers,
-              onMapCreated: (controller) {
-                _mapController = controller;
-              },
-              onTap: (position) {
-                // Handle map taps if needed
-              },
-            ),
-          ),
-        ],
+            Positioned(right: 12, top: 12, child: _legendCard()),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  Widget _legendCard() {
+    final severities = ['critical', 'high', 'medium', 'low', 'unknown'];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Legend', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          for (final s in severities)
+            Row(children: [
+              Container(width: 12, height: 12, color: _colorForSeverity(s)),
+              const SizedBox(width: 6),
+              Text(s.capitalize()),
+            ])
+        ]),
       ),
     );
   }
 
   @override
   void dispose() {
+    _zonesSub?.cancel();
     _mapController?.dispose();
     super.dispose();
   }
+}
+
+// Simple String extension for display
+extension _Cap on String {
+  String capitalize() => length > 0 ? '${this[0].toUpperCase()}${substring(1)}' : this;
 }

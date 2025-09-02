@@ -48,7 +48,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       NavigationItem(
         title: 'Hazard Mapping',
         icon: Icons.map_outlined,
-        screenBuilder: (onMenuPressed) => HazardMappingScreen(onMenuPressed: onMenuPressed),
+        screenBuilder: (onMenuPressed) => MapMonitoringpingScreen(onMenuPressed: onMenuPressed),
       ),
       NavigationItem(
         title: 'Analytics',
