@@ -1,212 +1,428 @@
-// Hazard Map (Focused)
-// File: hazard_map.dart
-// Description: Lightweight Flutter widget that renders hazard zones on Google Maps.
-// Data sources supported:
-//  - Firestore collection 'hazard_zones' (each doc: {name, severity, coordinates: [ {lat, lng}, ... ], description, colorHex?})
-//  - Local GeoJSON (optional) — helper included
-// Dependencies (add to pubspec.yaml):
-//   google_maps_flutter: any
-//   cloud_firestore: any
-//   geojson: any (optional)
-
-import 'dart:async';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:geocoding/geocoding.dart';
 
 class MapMonitoring extends StatefulWidget {
   const MapMonitoring({super.key});
-
-  /// If provided, the widget will read hazard zones from this path in Firestore.
-  final String firestoreCollection = 'hazard_zones';
 
   @override
   State<MapMonitoring> createState() => _MapMonitoringState();
 }
 
 class _MapMonitoringState extends State<MapMonitoring> {
+  // Constants
   static const LatLng _initialPosition = LatLng(14.5995, 120.9842);
-  static const double _initialZoom = 12.0;
+  static const double _initialZoom = 13.0;
+  static const double _mapHeight = 524.0;
 
+  // State variables
+  final Set<Marker> _markers = {};
+  final Map<String, LatLng> _geocodingCache = {};
   GoogleMapController? _mapController;
-  final Set<Polygon> _polygons = {};
-  final Map<String, Map<String, dynamic>> _zoneMeta = {};
-  StreamSubscription<QuerySnapshot>? _zonesSub;
+  Stream<QuerySnapshot>? _incidentsStream;
+
+  Map<String, dynamic>? _selectedIncident;
+  LatLng? _selectedPosition;
+  bool _isLoading = false; // NEW
 
   @override
   void initState() {
     super.initState();
-    _subscribeZones();
+    _setupRealTimeIncidents();
   }
 
-  void _subscribeZones() {
-    final col = FirebaseFirestore.instance.collection('hazard_zones');
-    _zonesSub = col.snapshots().listen((snap) {
-      _loadZonesFromSnapshot(snap.docs);
-    }, onError: (e) => debugPrint('Zones stream error: $e'));
+  void _setupRealTimeIncidents() {
+    setState(() => _isLoading = true); // start loading
+    _incidentsStream = FirebaseFirestore.instance
+        .collection('incidents')
+        .where('status', isNotEqualTo: 'resolved')
+        .snapshots();
+
+    _incidentsStream?.listen((snapshot) async {
+      await _processIncidents(snapshot.docs);
+      if (mounted) setState(() => _isLoading = false); // stop loading
+    });
   }
 
-  void _loadZonesFromSnapshot(List<QueryDocumentSnapshot> docs) {
-    final newPolys = <Polygon>{};
-    final newMeta = <String, Map<String, dynamic>>{};
+  Future<void> _processIncidents(List<QueryDocumentSnapshot> docs) async {
+    final newMarkers = <Marker>{};
 
     for (final doc in docs) {
-      try {
-        final data = doc.data() as Map<String, dynamic>;
-        final id = doc.id;
-        final name = data['name']?.toString() ?? id;
-        final severity = (data['severity'] ?? 'unknown').toString();
-        final description = data['description']?.toString() ?? '';
+      final data = doc.data() as Map<String, dynamic>;
+      final position = await _getIncidentPosition(data);
 
-        // Expect coordinates as a list of maps: [{"lat": x, "lng": y}, ...]
-        final coordsRaw = data['coordinates'];
-        if (coordsRaw == null || coordsRaw is! List) continue;
-
-        final points = <LatLng>[];
-        for (final p in coordsRaw) {
-          if (p is Map) {
-            final lat = (p['lat'] as num?)?.toDouble();
-            final lng = (p['lng'] as num?)?.toDouble();
-            if (lat != null && lng != null) points.add(LatLng(lat, lng));
-          }
-        }
-
-        if (points.length < 3) continue; // not a polygon
-
-        final color = _colorForSeverity(severity);
-
-        final poly = Polygon(
-          polygonId: PolygonId(id),
-          points: points,
-          fillColor: color.withOpacity(0.18),
-          strokeColor: color.withOpacity(0.8),
-          strokeWidth: 2,
-          consumeTapEvents: true,
-          onTap: () => _onZoneTap(id),
-        );
-
-        newPolys.add(poly);
-        newMeta[id] = {'name': name, 'severity': severity, 'description': description, 'color': color};
-      } catch (e) {
-        debugPrint('Error parsing zone ${doc.id}: $e');
+      if (position != null) {
+        final marker = await _createIncidentMarker(doc.id, data, position);
+        newMarkers.add(marker);
       }
     }
 
     if (mounted) {
       setState(() {
-        _polygons
+        _markers
           ..clear()
-          ..addAll(newPolys);
-        _zoneMeta
-          ..clear()
-          ..addAll(newMeta);
+          ..addAll(newMarkers);
       });
     }
   }
 
-  Color _colorForSeverity(String severity) {
-    switch (severity.toLowerCase()) {
-      case 'critical':
+  Future<LatLng?> _getIncidentPosition(Map<String, dynamic> data) async {
+    final coordinates = _parseCoordinates(data);
+    if (coordinates != null) return coordinates;
+
+    if (data['address'] != null) {
+      return await _geocodeAddress(data['address'] as String);
+    }
+
+    return null;
+  }
+
+  LatLng? _parseCoordinates(Map<String, dynamic> data) {
+    try {
+      final lat = data['latitude'] as double? ??
+          (data['latitude'] != null
+              ? double.tryParse(data['latitude'].toString())
+              : null);
+      final lng = data['longitude'] as double? ??
+          (data['longitude'] != null
+              ? double.tryParse(data['longitude'].toString())
+              : null);
+
+      return (lat != null && lng != null) ? LatLng(lat, lng) : null;
+    } catch (e) {
+      debugPrint('Error parsing coordinates: $e');
+      return null;
+    }
+  }
+
+  Future<LatLng?> _geocodeAddress(String address) async {
+    if (_geocodingCache.containsKey(address)) {
+      return _geocodingCache[address];
+    }
+
+    try {
+      final locations = await locationFromAddress(address);
+      if (locations.isNotEmpty) {
+        final position =
+            LatLng(locations.first.latitude, locations.first.longitude);
+        _geocodingCache[address] = position;
+        return position;
+      }
+    } catch (e) {
+      debugPrint('Geocoding failed for address: $address. Error: $e');
+    }
+    return null;
+  }
+
+Future<Marker> _createIncidentMarker(
+    String id, Map<String, dynamic> data, LatLng position) async {
+  final type = data['incidentType']?.toString() ?? 'other';
+  return Marker(
+    markerId: MarkerId(id),
+    position: position,
+    onTap: () {
+      setState(() {
+        _selectedIncident = {
+          'id': id,
+          'type': type,
+          'status': (data['status'] ?? 'pending').toString(),
+          'address': (data['address'] ?? 'Unknown').toString(),
+        };
+        _selectedPosition = position;
+      });
+
+      //Animate the camera to center the tapped marker
+      _mapController?.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: position,
+            zoom: 15, // adjust zoom level as you like
+          ),
+        ),
+      );
+    },
+    icon: await _getDisasterIcon(type),
+  );
+}
+
+
+  Future<BitmapDescriptor> _getDisasterIcon(String type) async {
+    final color = _getDisasterColor(type);
+    return BitmapDescriptor.defaultMarkerWithHue(
+      _colorToHue(color),
+    );
+  }
+
+  Color _getDisasterColor(String type) {
+    switch (type.toLowerCase()) {
+      case 'fire':
         return Colors.red;
-      case 'high':
+      case 'flood':
+        return Colors.blue;
+      case 'accident':
         return Colors.orange;
-      case 'medium':
-        return Colors.amber;
-      case 'low':
+      case 'typhoon':
         return Colors.green;
       default:
         return Colors.grey;
     }
   }
 
-  void _onZoneTap(String id) {
-    final meta = _zoneMeta[id];
-    if (meta == null) return;
+  double _colorToHue(Color color) {
+    final hsl = HSLColor.fromColor(color);
+    return hsl.hue;
+  }
 
-    showModalBottomSheet(context: context, builder: (ctx) {
-      return Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(children: [
-              Container(width: 12, height: 12, color: meta['color'] as Color),
-              const SizedBox(width: 8),
-              Text(meta['name'] ?? 'Zone', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              const Spacer(),
-              Chip(label: Text((meta['severity'] ?? '').toString().toUpperCase())),
-            ]),
-            const SizedBox(height: 8),
-            Text(meta['description'] ?? ''),
-            const SizedBox(height: 12),
-            Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-              TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Close')),
-            ])
-          ],
+  // === STATUS CHIP ===
+  Widget _buildStatusChip(String status) {
+    Color color;
+    switch (status.toLowerCase()) {
+      case 'resolved':
+        color = Colors.green;
+        break;
+      case 'in progress':
+        color = Colors.orange;
+        break;
+      case 'pending':
+        color = Colors.amber;
+        break;
+      default:
+        color = Colors.grey;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.15),
+        border: Border.all(color: color),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        status[0].toUpperCase() + status.substring(1),
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+          color: color,
         ),
-      );
-    });
+      ),
+    );
+  }
+
+  // === INCIDENT DETAILS BESIDE MARKER ===
+  Widget _buildIncidentDetails() {
+    if (_selectedIncident == null || _selectedPosition == null) {
+      return const SizedBox();
+    }
+
+    final screenPointFuture =
+        _mapController?.getScreenCoordinate(_selectedPosition!);
+
+    return FutureBuilder<ScreenCoordinate>(
+      future: screenPointFuture,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const SizedBox();
+
+        final screenPoint = snapshot.data!;
+        final dx = screenPoint.x.toDouble();
+        final dy = screenPoint.y.toDouble();
+
+        return Positioned(
+          left: dx + 30, // float to right of marker
+          top: dy - 60,  // align near marker head
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              width: 220,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.2),
+                    blurRadius: 6,
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.location_on,
+                          color: _getDisasterColor(_selectedIncident!['type']),
+                          size: 20),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          _selectedIncident!['type'],
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      _buildStatusChip(_selectedIncident!['status']),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _selectedIncident!['address'],
+                    style:
+                        const TextStyle(fontSize: 13, color: Colors.black87),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Card(
       elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Padding(
-          padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
-          child: Row(children: [
-            Icon(Icons.warning, size: 20),
-            SizedBox(width: 8),
-            Text('HAZARD MAP', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-          ]),
-        ),
-        const Divider(height: 1),
-        SizedBox(
-          height: 420,
-          child: Stack(children: [
-            GoogleMap(
-              initialCameraPosition: CameraPosition(target: _initialPosition, zoom: _initialZoom),
-              polygons: _polygons,
-              onMapCreated: (ctrl) => _mapController = ctrl,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+            child: Row(
+              children: [
+                const Icon(Icons.map_rounded, size: 24),
+                const SizedBox(width: 12),
+                const Text(
+                  'MAP MONITORING',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: "Refresh Map",
+                  icon: const Icon(Icons.refresh, color: Colors.blue),
+                  onPressed: () {
+                    setState(() {
+                      _selectedIncident = null;
+                      _selectedPosition = null;
+                      _markers.clear();
+                      _isLoading = true;
+                    });
+                    _setupRealTimeIncidents();
+                    _mapController?.animateCamera(
+                      CameraUpdate.newCameraPosition(
+                        const CameraPosition(
+                          target: _initialPosition,
+                          zoom: _initialZoom,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
             ),
-            Positioned(right: 12, top: 12, child: _legendCard()),
-          ]),
-        ),
-      ]),
-    );
-  }
+          ),
+          const Divider(height: 1),
+          SizedBox(
+            height: _mapHeight,
+            child: Stack(
+              children: [
+                  GoogleMap(
+                    initialCameraPosition: CameraPosition(
+                      target: _initialPosition,
+                      zoom: _initialZoom,
+                    ),
+                    mapType: MapType.normal,
+                    myLocationEnabled: true,
+                    myLocationButtonEnabled: true,
+                    zoomControlsEnabled: false,
+                    markers: _markers,
+                    onMapCreated: (controller) {
+                      _mapController = controller;
+                    },
+                    onTap: (LatLng pos) {
+                      setState(() {
+                        _selectedIncident = null;
+                        _selectedPosition = null;
+                      });
+                    },
+                    
+                  ),
+                  
 
-  Widget _legendCard() {
-    final severities = ['critical', 'high', 'medium', 'low', 'unknown'];
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Text('Legend', style: TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 6),
-          for (final s in severities)
-            Row(children: [
-              Container(width: 12, height: 12, color: _colorForSeverity(s)),
-              const SizedBox(width: 6),
-              Text(s.capitalize()),
-            ])
-        ]),
+                if (_selectedIncident != null && _selectedPosition != null)
+                  _buildIncidentDetails(),
+                // === LOADING INDICATOR ===
+                if (_isLoading)
+                  const Center(
+                    child: CircularProgressIndicator(
+                      color: Colors.blue,
+                    ),
+                  ),
+                Positioned(
+                  bottom: 10,
+                  left: 10,
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.9),
+                      borderRadius: BorderRadius.circular(8),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.2),
+                          blurRadius: 4,
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: const [
+                        _LegendItem(color: Colors.red, label: 'Fire'),
+                        _LegendItem(color: Colors.blue, label: 'Flood'),
+                        _LegendItem(color: Colors.orange, label: 'Accidents'),
+                        _LegendItem(color: Colors.grey, label: 'Other'),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
 
   @override
   void dispose() {
-    _zonesSub?.cancel();
     _mapController?.dispose();
     super.dispose();
   }
 }
 
-// Simple String extension for display
-extension _Cap on String {
-  String capitalize() => length > 0 ? '${this[0].toUpperCase()}${substring(1)}' : this;
+class _LegendItem extends StatelessWidget {
+  final Color color;
+  final String label;
+
+  const _LegendItem({required this.color, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(Icons.location_pin, color: color, size: 20),
+        const SizedBox(width: 6),
+        Text(label, style: const TextStyle(fontSize: 14)),
+      ],
+    );
+  }
 }

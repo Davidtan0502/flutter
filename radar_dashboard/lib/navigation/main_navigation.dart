@@ -46,7 +46,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
         hasFloatingAction: true,
       ),
       NavigationItem(
-        title: 'Hazard Mapping',
+        title: 'Maps',
         icon: Icons.map_outlined,
         screenBuilder: (onMenuPressed) => MapMonitoringpingScreen(onMenuPressed: onMenuPressed),
       ),
