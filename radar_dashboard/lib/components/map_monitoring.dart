@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geocoding/geocoding.dart';
+import 'package:intl/intl.dart';
+import 'dart:async';
+
 
 class MapMonitoring extends StatefulWidget {
   const MapMonitoring({super.key});
@@ -14,46 +17,75 @@ class _MapMonitoringState extends State<MapMonitoring> {
   // Constants
   static const LatLng _initialPosition = LatLng(14.5995, 120.9842);
   static const double _initialZoom = 13.0;
-  static const double _mapHeight = 524.0;
+  static const double _mapHeight = 671.5;
 
-  // State variables
+  // State
   final Set<Marker> _markers = {};
   final Map<String, LatLng> _geocodingCache = {};
+  final Map<String, BitmapDescriptor> _iconCache = {};
   GoogleMapController? _mapController;
-  Stream<QuerySnapshot>? _incidentsStream;
+  StreamSubscription<QuerySnapshot>? _incidentsSub;
 
   Map<String, dynamic>? _selectedIncident;
   LatLng? _selectedPosition;
-  bool _isLoading = false; // NEW
+  bool _isLoading = true;
+  bool _hasError = false;
+  String _errorMessage = '';
+
+  // Debounce
+  DateTime _lastGeocodeTime = DateTime.now();
+  static const Duration _geocodeDebounce = Duration(milliseconds: 500);
 
   @override
   void initState() {
     super.initState();
-    _setupRealTimeIncidents();
+    _preloadIcons();
+    _listenToIncidents();
   }
 
-  void _setupRealTimeIncidents() {
-    setState(() => _isLoading = true); // start loading
-    _incidentsStream = FirebaseFirestore.instance
+  Future<void> _preloadIcons() async {
+    for (final type in ['fire', 'flood', 'accident', 'typhoon', 'other']) {
+      _iconCache[type] = await _getDisasterIcon(type);
+    }
+  }
+
+  void _listenToIncidents() {
+    setState(() {
+      _isLoading = true;
+      _hasError = false;
+    });
+
+    _incidentsSub = FirebaseFirestore.instance
         .collection('incidents')
         .where('status', isNotEqualTo: 'resolved')
-        .snapshots();
-
-    _incidentsStream?.listen((snapshot) async {
-      await _processIncidents(snapshot.docs);
-      if (mounted) setState(() => _isLoading = false); // stop loading
-    });
+        .snapshots()
+        .listen(
+      (snapshot) => _processIncidents(snapshot.docs),
+      onError: (error) {
+        if (mounted) {
+          setState(() {
+            _hasError = true;
+            _errorMessage = 'Error loading incidents: $error';
+            _isLoading = false;
+          });
+        }
+      },
+    );
   }
 
   Future<void> _processIncidents(List<QueryDocumentSnapshot> docs) async {
+    if (!mounted) return;
     final newMarkers = <Marker>{};
+    final processed = <String>{};
 
     for (final doc in docs) {
-      final data = doc.data() as Map<String, dynamic>;
-      final position = await _getIncidentPosition(data);
+      if (processed.contains(doc.id)) continue;
+      processed.add(doc.id);
 
-      if (position != null) {
-        final marker = await _createIncidentMarker(doc.id, data, position);
+      final data = doc.data() as Map<String, dynamic>;
+      final pos = await _getIncidentPosition(data);
+      if (pos != null) {
+        final marker = await _createMarker(doc.id, data, pos);
         newMarkers.add(marker);
       }
     }
@@ -63,99 +95,96 @@ class _MapMonitoringState extends State<MapMonitoring> {
         _markers
           ..clear()
           ..addAll(newMarkers);
+        _isLoading = false;
       });
     }
   }
 
   Future<LatLng?> _getIncidentPosition(Map<String, dynamic> data) async {
-    final coordinates = _parseCoordinates(data);
-    if (coordinates != null) return coordinates;
+    try {
+      final coords = _parseCoordinates(data);
+      if (coords != null) return coords;
 
-    if (data['address'] != null) {
-      return await _geocodeAddress(data['address'] as String);
+      final address = data['address'] as String?;
+      if (address != null && address.isNotEmpty) {
+        final now = DateTime.now();
+        if (now.difference(_lastGeocodeTime) < _geocodeDebounce) {
+          await Future.delayed(_geocodeDebounce);
+        }
+        _lastGeocodeTime = DateTime.now();
+        return await _geocodeAddress(address);
+      }
+    } catch (e) {
+      debugPrint('Error getting position: $e');
     }
-
     return null;
   }
 
   LatLng? _parseCoordinates(Map<String, dynamic> data) {
     try {
-      final lat = data['latitude'] as double? ??
-          (data['latitude'] != null
-              ? double.tryParse(data['latitude'].toString())
-              : null);
-      final lng = data['longitude'] as double? ??
-          (data['longitude'] != null
-              ? double.tryParse(data['longitude'].toString())
-              : null);
-
-      return (lat != null && lng != null) ? LatLng(lat, lng) : null;
-    } catch (e) {
-      debugPrint('Error parsing coordinates: $e');
+      final lat = double.tryParse(data['latitude']?.toString() ?? '');
+      final lng = double.tryParse(data['longitude']?.toString() ?? '');
+      return (lat != null && lng != null && lat != 0.0 && lng != 0.0)
+          ? LatLng(lat, lng)
+          : null;
+    } catch (_) {
       return null;
     }
   }
 
   Future<LatLng?> _geocodeAddress(String address) async {
-    if (_geocodingCache.containsKey(address)) {
-      return _geocodingCache[address];
-    }
-
+    if (_geocodingCache.containsKey(address)) return _geocodingCache[address];
     try {
-      final locations = await locationFromAddress(address);
-      if (locations.isNotEmpty) {
-        final position =
-            LatLng(locations.first.latitude, locations.first.longitude);
-        _geocodingCache[address] = position;
-        return position;
+      final locs = await locationFromAddress(address);
+      if (locs.isNotEmpty) {
+        final pos = LatLng(locs.first.latitude, locs.first.longitude);
+        _geocodingCache[address] = pos;
+        return pos;
       }
     } catch (e) {
-      debugPrint('Geocoding failed for address: $address. Error: $e');
+      debugPrint('Geocoding failed: $address | $e');
     }
     return null;
   }
 
-Future<Marker> _createIncidentMarker(
-    String id, Map<String, dynamic> data, LatLng position) async {
-  final type = data['incidentType']?.toString() ?? 'other';
-  return Marker(
-    markerId: MarkerId(id),
-    position: position,
-    onTap: () {
-      setState(() {
-        _selectedIncident = {
-          'id': id,
-          'type': type,
-          'status': (data['status'] ?? 'pending').toString(),
-          'address': (data['address'] ?? 'Unknown').toString(),
-        };
-        _selectedPosition = position;
-      });
+  Future<Marker> _createMarker(
+      String id, Map<String, dynamic> data, LatLng pos) async {
+    final type = (data['incidentType'] ?? 'other').toString().toLowerCase();
+    final markerIcon = _iconCache[type] ?? await _getDisasterIcon(type);
 
-      //Animate the camera to center the tapped marker
-      _mapController?.animateCamera(
-        CameraUpdate.newCameraPosition(
-          CameraPosition(
-            target: position,
-            zoom: 15, // adjust zoom level as you like
+    return Marker(
+      markerId: MarkerId(id),
+      position: pos,
+      icon: markerIcon,
+      onTap: () {
+        setState(() {
+          _selectedIncident = {
+            'id': id,
+            'type': type,
+            'status': data['status'] ?? 'pending',
+            'address': data['address'] ?? 'Unknown',
+            'description': data['description'] ?? '',
+            'timestamp': data['timestamp'],
+          };
+          _selectedPosition = pos;
+        });
+        _mapController?.animateCamera(
+          CameraUpdate.newCameraPosition(
+            CameraPosition(target: pos, zoom: 15),
           ),
-        ),
-      );
-    },
-    icon: await _getDisasterIcon(type),
-  );
-}
-
+        );
+      },
+    );
+  }
 
   Future<BitmapDescriptor> _getDisasterIcon(String type) async {
-    final color = _getDisasterColor(type);
     return BitmapDescriptor.defaultMarkerWithHue(
-      _colorToHue(color),
+      HSLColor.fromColor(_getDisasterColor(type)).hue,
     );
   }
 
   Color _getDisasterColor(String type) {
-    switch (type.toLowerCase()) {
+    switch (type) {
       case 'fire':
         return Colors.red;
       case 'flood':
@@ -169,116 +198,144 @@ Future<Marker> _createIncidentMarker(
     }
   }
 
-  double _colorToHue(Color color) {
-    final hsl = HSLColor.fromColor(color);
-    return hsl.hue;
-  }
-
-  // === STATUS CHIP ===
   Widget _buildStatusChip(String status) {
     Color color;
+    IconData icon;
     switch (status.toLowerCase()) {
       case 'resolved':
         color = Colors.green;
+        icon = Icons.check_circle;
         break;
       case 'in progress':
         color = Colors.orange;
+        icon = Icons.build_circle;
         break;
       case 'pending':
         color = Colors.amber;
+        icon = Icons.access_time;
+        break;
+      case 'under review':
+        color = Colors.purple;
+        icon = Icons.visibility;
         break;
       default:
         color = Colors.grey;
+        icon = Icons.help;
     }
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: color.withOpacity(0.15),
         border: Border.all(color: color),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Text(
-        status[0].toUpperCase() + status.substring(1),
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
-          color: color,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 4),
+          Text(status.toUpperCase(),
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color)),
+        ],
+      ),
+    );
+  }
+
+  String _formatTimestamp(dynamic ts) {
+    if (ts is Timestamp) {
+      return DateFormat('MMM d, h:mm a').format(ts.toDate());
+    }
+    return 'Unknown';
+  }
+
+  Widget _buildIncidentDetails() {
+    if (_selectedIncident == null) return const SizedBox();
+    final incident = _selectedIncident!;
+
+    return Positioned(
+      right: 16,
+      top: 16,
+      child: Material(
+        elevation: 6,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          width: 280,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded,
+                      color: _getDisasterColor(incident['type']), size: 24),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      incident['type'].toString().toUpperCase(),
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () => setState(() => _selectedIncident = null),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(incident['address'], style: const TextStyle(fontSize: 14)),
+              if (incident['description'].toString().isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(incident['description'],
+                    style: const TextStyle(fontSize: 13, color: Colors.grey, fontStyle: FontStyle.italic),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis),
+              ],
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  _buildStatusChip(incident['status']),
+                  const Spacer(),
+                  if (incident['timestamp'] != null)
+                    Text(_formatTimestamp(incident['timestamp']),
+                        style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  // === INCIDENT DETAILS BESIDE MARKER ===
-  Widget _buildIncidentDetails() {
-    if (_selectedIncident == null || _selectedPosition == null) {
-      return const SizedBox();
-    }
-
-    final screenPointFuture =
-        _mapController?.getScreenCoordinate(_selectedPosition!);
-
-    return FutureBuilder<ScreenCoordinate>(
-      future: screenPointFuture,
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) return const SizedBox();
-
-        final screenPoint = snapshot.data!;
-        final dx = screenPoint.x.toDouble();
-        final dy = screenPoint.y.toDouble();
-
-        return Positioned(
-          left: dx + 30, // float to right of marker
-          top: dy - 60,  // align near marker head
-          child: Material(
-            color: Colors.transparent,
-            child: Container(
-              width: 220,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.2),
-                    blurRadius: 6,
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.location_on,
-                          color: _getDisasterColor(_selectedIncident!['type']),
-                          size: 20),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          _selectedIncident!['type'],
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                      _buildStatusChip(_selectedIncident!['status']),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    _selectedIncident!['address'],
-                    style:
-                        const TextStyle(fontSize: 13, color: Colors.black87),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
+  Widget _buildLegend() {
+    return Positioned(
+      top: 16,
+      left: 16,
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.95),
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 6, offset: const Offset(0, 2)),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: const [
+            _LegendItem(color: Colors.red, label: 'Fire'),
+            _LegendItem(color: Colors.blue, label: 'Flood'),
+            _LegendItem(color: Colors.orange, label: 'Accident'),
+            _LegendItem(color: Colors.green, label: 'Typhoon'),
+            _LegendItem(color: Colors.grey, label: 'Other'),
+          ],
+        ),
+      ),
     );
   }
 
@@ -286,45 +343,38 @@ Future<Marker> _createIncidentMarker(
   Widget build(BuildContext context) {
     return Card(
       elevation: 4,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+        children: [
+          // Title & refresh
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
             child: Row(
               children: [
-                const Icon(Icons.map_rounded, size: 24),
+                const Icon(Icons.map_rounded, size: 24, color: Colors.blue),
                 const SizedBox(width: 12),
-                const Text(
-                  'MAP MONITORING',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
+                const Text('MAP MONITORING',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
                 const Spacer(),
+                if (_isLoading)
+                  const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                const SizedBox(width: 8),
                 IconButton(
                   tooltip: "Refresh Map",
                   icon: const Icon(Icons.refresh, color: Colors.blue),
                   onPressed: () {
                     setState(() {
                       _selectedIncident = null;
-                      _selectedPosition = null;
                       _markers.clear();
                       _isLoading = true;
+                      _hasError = false;
                     });
-                    _setupRealTimeIncidents();
+                    _listenToIncidents();
                     _mapController?.animateCamera(
                       CameraUpdate.newCameraPosition(
-                        const CameraPosition(
-                          target: _initialPosition,
-                          zoom: _initialZoom,
-                        ),
-                      ),
+                          const CameraPosition(target: _initialPosition, zoom: _initialZoom)),
                     );
                   },
                 ),
@@ -336,64 +386,26 @@ Future<Marker> _createIncidentMarker(
             height: _mapHeight,
             child: Stack(
               children: [
-                  GoogleMap(
-                    initialCameraPosition: CameraPosition(
-                      target: _initialPosition,
-                      zoom: _initialZoom,
-                    ),
-                    mapType: MapType.normal,
-                    myLocationEnabled: true,
-                    myLocationButtonEnabled: true,
-                    zoomControlsEnabled: false,
-                    markers: _markers,
-                    onMapCreated: (controller) {
-                      _mapController = controller;
-                    },
-                    onTap: (LatLng pos) {
-                      setState(() {
-                        _selectedIncident = null;
-                        _selectedPosition = null;
-                      });
-                    },
-                    
-                  ),
-                  
-
-                if (_selectedIncident != null && _selectedPosition != null)
-                  _buildIncidentDetails(),
-                // === LOADING INDICATOR ===
-                if (_isLoading)
-                  const Center(
-                    child: CircularProgressIndicator(
-                      color: Colors.blue,
-                    ),
-                  ),
-                Positioned(
-                  bottom: 10,
-                  left: 10,
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(8),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.2),
-                          blurRadius: 4,
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: const [
-                        _LegendItem(color: Colors.red, label: 'Fire'),
-                        _LegendItem(color: Colors.blue, label: 'Flood'),
-                        _LegendItem(color: Colors.orange, label: 'Accidents'),
-                        _LegendItem(color: Colors.grey, label: 'Other'),
-                      ],
-                    ),
-                  ),
+                GoogleMap(
+                  initialCameraPosition: const CameraPosition(
+                      target: _initialPosition, zoom: _initialZoom),
+                  mapType: MapType.normal,
+                  myLocationEnabled: true,
+                  myLocationButtonEnabled: true,
+                  zoomControlsEnabled: false,
+                  markers: _markers,
+                  onMapCreated: (controller) => _mapController = controller,
+                  onTap: (_) => setState(() => _selectedIncident = null),
                 ),
+                if (_selectedIncident != null) _buildIncidentDetails(),
+                if (_hasError)
+                  Center(
+                    child: Text(_errorMessage,
+                        style: const TextStyle(color: Colors.red)),
+                  ),
+                if (_isLoading && !_hasError)
+                  const Center(child: CircularProgressIndicator(color: Colors.blue)),
+                _buildLegend(),
               ],
             ),
           ),
@@ -405,6 +417,7 @@ Future<Marker> _createIncidentMarker(
   @override
   void dispose() {
     _mapController?.dispose();
+    _incidentsSub?.cancel();
     super.dispose();
   }
 }
@@ -417,12 +430,15 @@ class _LegendItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(Icons.location_pin, color: color, size: 20),
-        const SizedBox(width: 6),
-        Text(label, style: const TextStyle(fontSize: 14)),
-      ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Icon(Icons.location_on, color: color, size: 18),
+          const SizedBox(width: 6),
+          Text(label, style: const TextStyle(fontSize: 13)),
+        ],
+      ),
     );
   }
 }

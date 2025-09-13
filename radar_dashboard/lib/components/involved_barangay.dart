@@ -30,7 +30,7 @@ class _BarangayChartContent extends StatelessWidget {
       children: [
         const SectionHeader(
           icon: Icons.location_on_outlined,
-          title: 'INVOLVED LOCATION',
+          title: 'INVOLVED LOCATION', subtitle: '',
         ),
         const SizedBox(height: 20),
         _BarangayDataLoader(),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:radar_dashboard/login/login_register_screen.dart';
 import 'package:radar_dashboard/navigation/main_navigation.dart';
+import 'package:radar_dashboard/login/admin_panel_screen.dart'; // ⬅️ add this
 import 'package:shared_preferences/shared_preferences.dart';
 import 'firebase_options.dart';
 
@@ -59,7 +60,7 @@ class _ProjectRadarAppState extends State<ProjectRadarApp> {
       ),
       themeMode: isDarkMode ? ThemeMode.dark : ThemeMode.light,
       debugShowCheckedModeBanner: false,
-      home: const LoginRegisterScreen(), // ⬅️ Show login screen first
+      home: const LoginRegisterScreen(), // ⬅️ Start at login
       routes: {
         '/admin-dashboard': (context) => NavigationScreen(
               isDarkMode: isDarkMode,
@@ -71,6 +72,7 @@ class _ProjectRadarAppState extends State<ProjectRadarApp> {
               onToggleTheme: toggleTheme,
               userRole: 'user',
             ),
+        '/admin-panel': (context) => const AdminPanelScreen(), // ⬅️ Add admin panel
       },
     );
   }

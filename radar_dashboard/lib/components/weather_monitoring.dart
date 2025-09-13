@@ -90,7 +90,7 @@ class _WeatherMonitoringState extends State<WeatherMonitoring> {
             children: [
               const SectionHeader(
                 icon: Icons.cloud,
-                title: 'WEATHER UPDATES',
+                title: 'WEATHER UPDATES', subtitle: '',
               ),
               const SizedBox(height: 16),
               

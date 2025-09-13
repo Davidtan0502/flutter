@@ -3,9 +3,16 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:radar_dashboard/components/section_header.dart';
 
-
-class MonthlyIncidentReport extends StatelessWidget {
+class MonthlyIncidentReport extends StatefulWidget {
   const MonthlyIncidentReport({super.key});
+
+  @override
+  State<MonthlyIncidentReport> createState() => _MonthlyIncidentReportState();
+}
+
+class _MonthlyIncidentReportState extends State<MonthlyIncidentReport> {
+  int _currentSet = 0; // 0: Jan-Jun, 1: Jul-Dec
+  final int _monthsPerSet = 6;
 
   @override
   Widget build(BuildContext context) {
@@ -22,7 +29,8 @@ class MonthlyIncidentReport extends StatelessWidget {
           children: [
             const SectionHeader(
               icon: Icons.bar_chart_outlined,
-              title: 'MONTHLY INCIDENT REPORT',
+              title: 'MONTHLY INCIDENT REPORT', 
+              subtitle: '',
             ),
             const SizedBox(height: 20),
             StreamBuilder<QuerySnapshot>(
@@ -39,13 +47,20 @@ class MonthlyIncidentReport extends StatelessWidget {
 
                 final incidents = snapshot.data!.docs;
                 final monthlyCounts = _calculateMonthlyCounts(incidents);
+                final currentSetCounts = _getCurrentSetCounts(monthlyCounts);
 
-                return SizedBox(
-                  height: 250,
-                  child: BarChart(
-                    _monthlyIncidentData(monthlyCounts),
-                    swapAnimationDuration: const Duration(milliseconds: 500),
-                  ),
+                return Column(
+                  children: [
+                    SizedBox(
+                      height: 230,
+                      child: BarChart(
+                        _monthlyIncidentData(currentSetCounts),
+                        swapAnimationDuration: const Duration(milliseconds: 500),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    _buildNavigationControls(monthlyCounts.length),
+                  ],
                 );
               },
             ),
@@ -56,15 +71,14 @@ class MonthlyIncidentReport extends StatelessWidget {
   }
 
   List<int> _calculateMonthlyCounts(List<QueryDocumentSnapshot> incidents) {
-    final monthlyCounts = List<int>.filled(6, 0); // For Jan-Jun
+    final monthlyCounts = List<int>.filled(12, 0); // For all 12 months
 
     for (final doc in incidents) {
       final timestamp = doc['timestamp'] as Timestamp;
       final date = timestamp.toDate();
       final month = date.month - 1; // Convert to 0-11 index
 
-      // Only count if month is between Jan (0) and Jun (5)
-      if (month >= 0 && month <= 5) {
+      if (month >= 0 && month <= 11) {
         monthlyCounts[month]++;
       }
     }
@@ -72,7 +86,21 @@ class MonthlyIncidentReport extends StatelessWidget {
     return monthlyCounts;
   }
 
+  List<int> _getCurrentSetCounts(List<int> monthlyCounts) {
+    final startIndex = _currentSet * _monthsPerSet;
+    final endIndex = startIndex + _monthsPerSet;
+    
+    // Ensure we don't go beyond the available months
+    if (endIndex > monthlyCounts.length) {
+      return monthlyCounts.sublist(startIndex);
+    }
+    
+    return monthlyCounts.sublist(startIndex, endIndex);
+  }
+
   BarChartData _monthlyIncidentData(List<int> monthlyCounts) {
+    final monthNames = _getMonthNames();
+    
     return BarChartData(
       gridData: FlGridData(
         show: true,
@@ -95,18 +123,21 @@ class MonthlyIncidentReport extends StatelessWidget {
           sideTitles: SideTitles(
             showTitles: true,
             getTitlesWidget: (value, meta) {
-              const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN'];
-              return Padding(
-                padding: const EdgeInsets.only(top: 8.0),
-                child: Text(
-                  months[value.toInt()],
-                  style: const TextStyle(
-                    color: Colors.black,
-                    fontSize: 10,
-                    fontWeight: FontWeight.w500,
+              final index = value.toInt();
+              if (index >= 0 && index < monthlyCounts.length) {
+                return Padding(
+                  padding: const EdgeInsets.only(top: 8.0),
+                  child: Text(
+                    monthNames[index],
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
-                ),
-              );
+                );
+              }
+              return const SizedBox();
             },
           ),
         ),
@@ -133,36 +164,53 @@ class MonthlyIncidentReport extends StatelessWidget {
           sideTitles: SideTitles(showTitles: false),
         ),
       ),
-      barGroups: [
-        BarChartGroupData(
-          x: 0,
-          barRods: [BarChartRodData(toY: monthlyCounts[0].toDouble(), color: Colors.blue[400]!, width: 16)],
-        ),
-        BarChartGroupData(
-          x: 1,
-          barRods: [BarChartRodData(toY: monthlyCounts[1].toDouble(), color: Colors.teal[400]!, width: 16)],
-        ),
-        BarChartGroupData(
-          x: 2,
-          barRods: [BarChartRodData(toY: monthlyCounts[2].toDouble(), color: Colors.orange[400]!, width: 16)],
-        ),
-        BarChartGroupData(
-          x: 3,
-          barRods: [BarChartRodData(toY: monthlyCounts[3].toDouble(), color: Colors.deepPurple[400]!, width: 16)],
-        ),
-        BarChartGroupData(
-          x: 4,
-          barRods: [BarChartRodData(toY: monthlyCounts[4].toDouble(), color: Colors.pink[400]!, width: 16)],
-        ),
-        BarChartGroupData(
-          x: 5,
-          barRods: [BarChartRodData(toY: monthlyCounts[5].toDouble(), color: Colors.green[400]!, width: 16)],
-        ),
-      ],
+      barGroups: List.generate(monthlyCounts.length, (index) {
+        return BarChartGroupData(
+          x: index,
+          barRods: [
+            BarChartRodData(
+              toY: monthlyCounts[index].toDouble(), 
+              color: _getBarColor(index), 
+              width: 16,
+              borderRadius: BorderRadius.circular(4),
+            )
+          ],
+        );
+      }),
     );
   }
 
+  List<String> _getMonthNames() {
+    if (_currentSet == 0) {
+      return ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN'];
+    } else {
+      return ['JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    }
+  }
+
+  Color _getBarColor(int index) {
+    final colors = [
+      Colors.blue[400]!,
+      Colors.teal[400]!,
+      Colors.orange[400]!,
+      Colors.deepPurple[400]!,
+      Colors.pink[400]!,
+      Colors.green[400]!,
+      Colors.red[400]!,
+      Colors.purple[400]!,
+      Colors.amber[400]!,
+      Colors.cyan[400]!,
+      Colors.indigo[400]!,
+      Colors.lime[400]!,
+    ];
+    
+    final actualIndex = _currentSet * _monthsPerSet + index;
+    return colors[actualIndex % colors.length];
+  }
+
   double _calculateInterval(List<int> counts) {
+    if (counts.isEmpty) return 5;
+    
     final maxCount = counts.reduce((a, b) => a > b ? a : b);
     if (maxCount <= 5) return 1;
     if (maxCount <= 10) return 2;
@@ -170,5 +218,43 @@ class MonthlyIncidentReport extends StatelessWidget {
     if (maxCount <= 50) return 10;
     if (maxCount <= 100) return 20;
     return 50;
+  }
+
+  Widget _buildNavigationControls(int totalMonths) {
+    final totalSets = (totalMonths / _monthsPerSet).ceil();
+    final hasPrevious = _currentSet > 0;
+    final hasNext = _currentSet < totalSets - 1;
+    
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        IconButton(
+          icon: Icon(Icons.arrow_back_ios, size: 16),
+          onPressed: hasPrevious ? () {
+            setState(() {
+              _currentSet--;
+            });
+          } : null,
+          color: hasPrevious ? Colors.blue : Colors.grey,
+        ),
+        Text(
+          '${_currentSet * _monthsPerSet + 1}-${(_currentSet + 1) * _monthsPerSet}',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            color: Colors.blueGrey[700],
+          ),
+        ),
+        IconButton(
+          icon: Icon(Icons.arrow_forward_ios, size: 16),
+          onPressed: hasNext ? () {
+            setState(() {
+              _currentSet++;
+            });
+          } : null,
+          color: hasNext ? Colors.blue : Colors.grey,
+        ),
+      ],
+    );
   }
 }

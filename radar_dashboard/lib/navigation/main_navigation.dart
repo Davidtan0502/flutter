@@ -1,21 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:animations/animations.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:radar_dashboard/dashboard/dashboard_screen.dart';
 import 'package:radar_dashboard/screens/analytics_screen.dart';
 import 'package:radar_dashboard/screens/emergencies_screen.dart';
 import 'package:radar_dashboard/screens/mapping_screen.dart';
 import 'package:radar_dashboard/screens/settings_screen.dart';
+import 'package:radar_dashboard/login/login_register_screen.dart';
 
 class NavigationScreen extends StatefulWidget {
   final bool isDarkMode;
   final ValueChanged<bool> onToggleTheme;
-  final String userRole; // <-- NEW
+  final String userRole; // <-- role comes in here
 
   const NavigationScreen({
     super.key,
     required this.isDarkMode,
     required this.onToggleTheme,
-    required this.userRole, // <-- NEW
+    required this.userRole,
   });
 
   @override
@@ -37,29 +39,31 @@ class _NavigationScreenState extends State<NavigationScreen> {
       NavigationItem(
         title: 'Dashboard',
         icon: Icons.dashboard_outlined,
-        screenBuilder: (onMenuPressed) => DashboardScreen(onMenuPressed: onMenuPressed),
+        screenBuilder: (onMenuPressed) =>
+            DashboardScreen(onMenuPressed: onMenuPressed),
       ),
       NavigationItem(
         title: 'Incident Reports',
         icon: Icons.emergency_outlined,
-        screenBuilder: (onMenuPressed) => EmergenciesScreen(onMenuPressed: onMenuPressed),
+        screenBuilder: (onMenuPressed) =>
+            EmergenciesScreen( // ✅ pass role here
+              onMenuPressed: onMenuPressed,
+              userRole: widget.userRole,
+            ),
         hasFloatingAction: true,
       ),
       NavigationItem(
         title: 'Maps',
         icon: Icons.map_outlined,
-        screenBuilder: (onMenuPressed) => MapMonitoringpingScreen(onMenuPressed: onMenuPressed),
+        screenBuilder: (onMenuPressed) =>
+            MapMonitoringpingScreen(onMenuPressed: onMenuPressed),
       ),
       NavigationItem(
         title: 'Analytics',
         icon: Icons.analytics_outlined,
-        screenBuilder: (onMenuPressed) => AnalyticsScreen(onMenuPressed: onMenuPressed)
+        screenBuilder: (onMenuPressed) =>
+            AnalyticsScreen(onMenuPressed: onMenuPressed),
       ),
-      // NavigationItem(
-      //   title: 'Users',
-      //   icon: Icons.people_alt_outlined,
-      //   screenBuilder: (_) => const UsersManagementScreen(),
-      // ),
       NavigationItem(
         title: 'System Settings',
         icon: Icons.settings_outlined,
@@ -76,8 +80,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       _navigationItems = allItems;
     } else {
       _navigationItems = allItems.where((item) =>
-        item.title == 'Dashboard' || item.title == 'Incident Reports'
-      ).toList();
+        item.title == 'Dashboard' || item.title == 'Incident Reports'|| item.title == 'Analytics'|| item.title == 'System Settings').toList();
     }
   }
 
@@ -132,8 +135,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
                 padding: EdgeInsets.zero,
                 children: [
                   ..._navigationItems.map(_buildDrawerItem),
-                  const Divider(color: Colors.grey, height: 32, thickness: 0.5),
-                  // Add logout if needed
                 ],
               ),
             ),
@@ -193,7 +194,8 @@ class _NavigationScreenState extends State<NavigationScreen> {
   }
 
   Widget _buildDrawerItem(NavigationItem item) {
-    final isSelected = !item.isLogout && _navigationItems.indexOf(item) == _selectedIndex;
+    final isSelected =
+        _navigationItems.indexOf(item) == _selectedIndex;
 
     return ListTile(
       leading: Icon(
@@ -210,7 +212,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       ),
       selected: isSelected,
       hoverColor: Colors.blue[50],
-      onTap: () => item.isLogout ? _showLogoutDialog() : _handleDrawerItemTap(item),
+      onTap: () => _handleDrawerItemTap(item),
     );
   }
 
@@ -220,33 +222,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
       setState(() => _selectedIndex = index);
       _scaffoldKey.currentState?.closeDrawer();
     }
-  }
-
-  void _showLogoutDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Logout'),
-        content: const Text('Are you sure you want to logout?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: _performLogout,
-            child: const Text('Logout'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _performLogout() {
-    Navigator.of(context)
-      ..pop()
-      ..pop();
-    // TODO: Add actual logout logic here
   }
 
   void _handleNewEmergency() {
@@ -265,13 +240,11 @@ class NavigationItem {
   final IconData icon;
   final Widget Function(VoidCallback onMenuPressed) screenBuilder;
   final bool hasFloatingAction;
-  final bool isLogout;
 
   NavigationItem({
     required this.title,
     required this.icon,
     required this.screenBuilder,
     this.hasFloatingAction = false,
-    this.isLogout = false,
   });
 }

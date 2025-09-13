@@ -9,7 +9,7 @@ class SectionHeader extends StatelessWidget {
     super.key,
     required this.icon,
     required this.title,
-    this.count,
+    this.count, required String subtitle,
   });
 
   @override

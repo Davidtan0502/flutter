@@ -9,14 +9,10 @@ class LoginRegisterScreen extends StatefulWidget {
   State<LoginRegisterScreen> createState() => _LoginRegisterScreenState();
 }
 
-class _LoginRegisterScreenState extends State<LoginRegisterScreen>
-    with SingleTickerProviderStateMixin {
+class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
   final _formKey = GlobalKey<FormState>();
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-
-  late AnimationController _animationController;
-  late Animation<Color?> _colorAnimation;
 
   bool isLogin = true;
   bool isLoading = false;
@@ -26,27 +22,6 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen>
   String email = '';
   String password = '';
   String confirmPassword = '';
-  String role = 'user';
-
-  @override
-  void initState() {
-    super.initState();
-    _animationController = AnimationController(
-      duration: const Duration(seconds: 5),
-      vsync: this,
-    )..repeat(reverse: true);
-
-    _colorAnimation = ColorTween(
-      begin: const Color(0xFF2C5282),
-      end: const Color.fromARGB(255, 29, 56, 88),
-    ).animate(_animationController);
-  }
-
-  @override
-  void dispose() {
-    _animationController.dispose();
-    super.dispose();
-  }
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
@@ -55,25 +30,39 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen>
 
     try {
       if (isLogin) {
+        // LOGIN FLOW
         final result = await _auth.signInWithEmailAndPassword(
           email: email,
           password: password,
         );
+
+        if (!result.user!.emailVerified) {
+          _showSnackbar("Please verify your email before logging in.");
+          await _auth.signOut();
+          return;
+        }
+
         final userDoc = await _firestore
             .collection('dashboard_users')
             .doc(result.user!.uid)
             .get();
 
-        if (!userDoc.exists || userDoc['role'] == null) {
-          _showSnackbar('User role not found.');
+        if (!userDoc.exists) {
+          _showSnackbar('Account not registered in dashboard.');
           return;
         }
 
-        final userRole = userDoc['role'];
+        final userRole = userDoc.data()?['role'];
+        if (userRole != 'admin' && userRole != 'user') {
+          _showSnackbar('Invalid user role.');
+          return;
+        }
+
         _showSnackbar('Login successful! Redirecting...');
         await Future.delayed(const Duration(seconds: 1));
         Navigator.pushReplacementNamed(context, '/$userRole-dashboard');
       } else {
+        // REGISTER FLOW
         if (password != confirmPassword) {
           _showSnackbar('Passwords do not match.');
           return;
@@ -84,16 +73,30 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen>
           password: password,
         );
 
+        // 🔹 Force default role = user
+        const assignedRole = 'user';
+
         await _firestore.collection('dashboard_users').doc(result.user!.uid).set({
           'uid': result.user!.uid,
           'email': email,
-          'role': role,
+          'role': assignedRole,
           'createdAt': Timestamp.now(),
         });
 
-        _showSnackbar('Account created! Redirecting...');
-        await Future.delayed(const Duration(seconds: 1));
-        Navigator.pushReplacementNamed(context, '/$role-dashboard');
+        // 🔹 Send email verification
+        await result.user!.sendEmailVerification();
+
+        _showSnackbar(
+          "Account created! Please verify your email before signing in.",
+        );
+
+        // 🔹 Force logout until verified
+        await _auth.signOut();
+
+        // Back to login mode
+        setState(() {
+          isLogin = true;
+        });
       }
     } on FirebaseAuthException catch (e) {
       _showSnackbar(e.message ?? 'Authentication failed.');
@@ -110,7 +113,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen>
         backgroundColor: Colors.black87,
         content: Text(
           message,
-          style: const TextStyle(color: Colors.white, fontFamily: 'Arial'),
+          style: const TextStyle(color: Colors.white),
         ),
         duration: const Duration(seconds: 3),
       ),
@@ -119,28 +122,33 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _colorAnimation,
-      builder: (context, child) => Scaffold(
-        body: Container(
-          width: double.infinity,
-          height: double.infinity,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [_colorAnimation.value ?? Colors.black, Colors.white],
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-            ),
+    return Scaffold(
+      body: Container(
+        width: double.infinity,
+        height: double.infinity,
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Color(0xFF2C5282), // Dark blue
+              Color(0xFF3182CE), // Medium blue
+              Color(0xFFE3F2FD), // Light blue
+            ],
           ),
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
+        ),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 480),
               child: Card(
-                elevation: 10,
+                elevation: 16,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(20),
                 ),
                 color: Colors.white,
+                shadowColor: Colors.black.withOpacity(0.3),
                 child: Padding(
                   padding: const EdgeInsets.all(32),
                   child: Form(
@@ -148,51 +156,75 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen>
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text('RADAR: Rapid Action for Disaster Aid Resource',
-                            style: Theme.of(context)
-                                .textTheme
-                                .headlineSmall
-                                ?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 28,
-                                  color: Colors.black,
-                                  fontFamily: 'Arial',
-                                )),
+                        // Header with Icon
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.radar,
+                              size: 40,
+                              color: Colors.blue[800],
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              'RADAR DASHBOARD',
+                              style: TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.w800,
+                                color: Colors.blue[800],
+                                letterSpacing: 1.2,
+                              ),
+                            ),
+                          ],
+                        ),
                         const SizedBox(height: 8),
-                        Text('Stay Alert, Stay Alive!',
-                            style: TextStyle(
-                              color: Colors.grey[800],
-                              fontSize: 16,
-                              fontFamily: 'Arial',
-                            )),
-                        const SizedBox(height: 24),
                         Text(
-                          isLogin ? 'Welcome Back' : 'Create Account',
+                          'Rapid Action for Disaster Aid Resource',
+                          style: TextStyle(
+                            color: Colors.grey[600],
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 32),
+
+                        // Title
+                        Text(
+                          isLogin ? 'SIGN IN TO DASHBOARD' : 'CREATE ACCOUNT',
                           style: const TextStyle(
-                            color: Colors.black,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            fontFamily: 'Arial',
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.black87,
+                            letterSpacing: 1.1,
                           ),
                         ),
                         const SizedBox(height: 24),
+
+                        // Email Field
                         _buildTextField(
-                          label: 'Email',
+                          label: 'EMAIL ADDRESS',
                           keyboardType: TextInputType.emailAddress,
+                          prefixIcon: Icons.email_outlined,
                           validator: (val) =>
                               val != null && val.contains('@') && val.contains('.')
                                   ? null
-                                  : 'Enter a valid email',
+                                  : 'Enter a valid email address',
                           onSaved: (val) => email = val!.trim(),
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 20),
+
+                        // Password Field
                         _buildTextField(
-                          label: 'Password',
+                          label: 'PASSWORD',
                           obscure: obscurePassword,
+                          prefixIcon: Icons.lock_outline,
                           suffixIcon: IconButton(
                             icon: Icon(
-                              obscurePassword ? Icons.visibility_off : Icons.visibility,
-                              color: Colors.black,
+                              obscurePassword
+                                  ? Icons.visibility_off_outlined
+                                  : Icons.visibility_outlined,
+                              color: Colors.grey[600],
+                              size: 20,
                             ),
                             onPressed: () =>
                                 setState(() => obscurePassword = !obscurePassword),
@@ -202,15 +234,20 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen>
                               : 'Minimum 6 characters required',
                           onSaved: (val) => password = val!,
                         ),
+
                         if (!isLogin) ...[
-                          const SizedBox(height: 16),
+                          const SizedBox(height: 20),
                           _buildTextField(
-                            label: 'Confirm Password',
+                            label: 'CONFIRM PASSWORD',
                             obscure: obscureConfirmPassword,
+                            prefixIcon: Icons.lock_outline,
                             suffixIcon: IconButton(
                               icon: Icon(
-                                obscureConfirmPassword ? Icons.visibility_off : Icons.visibility,
-                                color: Colors.black,
+                                obscureConfirmPassword
+                                    ? Icons.visibility_off_outlined
+                                    : Icons.visibility_outlined,
+                                color: Colors.grey[600],
+                                size: 20,
                               ),
                               onPressed: () => setState(() =>
                                   obscureConfirmPassword = !obscureConfirmPassword),
@@ -220,75 +257,71 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen>
                                 : 'Re-enter your password',
                             onSaved: (val) => confirmPassword = val!,
                           ),
-                          const SizedBox(height: 16),
-                          DropdownButtonFormField<String>(
-                            value: role,
-                            dropdownColor: Colors.white,
-                            decoration: const InputDecoration(
-                              labelText: 'Select Role',
-                              labelStyle: TextStyle(color: Colors.black),
-                            ),
-                            style: const TextStyle(
-                                color: Colors.black, fontFamily: 'Arial'),
-                            items: const [
-                              DropdownMenuItem(
-                                value: 'user',
-                                child: Text('User',
-                                    style: TextStyle(color: Colors.black)),
-                              ),
-                              DropdownMenuItem(
-                                value: 'admin',
-                                child: Text('Admin',
-                                    style: TextStyle(color: Colors.black)),
-                              ),
-                            ],
-                            onChanged: (val) => setState(() => role = val!),
-                          ),
                         ],
-                        const SizedBox(height: 32),
+                        const SizedBox(height: 28),
+
+                        // Submit Button
                         isLoading
-                            ? const CircularProgressIndicator(color: Colors.black)
-                            : ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.black,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 40, vertical: 14),
-                                  shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(12)),
-                                ),
-                                onPressed: _submit,
-                                child: Text(
-                                  isLogin ? 'Login' : 'Register',
-                                  style: const TextStyle(
-                                      fontFamily: 'Arial',
-                                      fontWeight: FontWeight.bold),
+                            ? const CircularProgressIndicator(color: Colors.blue)
+                            : SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.blue[800],
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(vertical: 16),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    elevation: 4,
+                                  ),
+                                  onPressed: _submit,
+                                  child: Text(
+                                    isLogin ? 'SIGN IN' : 'CREATE ACCOUNT',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 16,
+                                      letterSpacing: 1.0,
+                                    ),
+                                  ),
                                 ),
                               ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 20),
+
+                        // Toggle between Login/Register
                         TextButton(
                           onPressed: () => setState(() => isLogin = !isLogin),
                           child: Text(
                             isLogin
-                                ? 'Don\'t have an account? Register'
-                                : 'Already have an account? Login',
-                            style: const TextStyle(
-                              color: Colors.black,
-                              fontFamily: 'Arial',
+                                ? 'Need an account? Register here'
+                                : 'Already have an account? Sign in here',
+                            style: TextStyle(
+                              color: Colors.blue[700],
+                              fontWeight: FontWeight.w500,
                               decoration: TextDecoration.underline,
                             ),
                           ),
                         ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'Road Safety: A Small Effort, A Big Difference. Slow Down, Save Lives.',
-                          style: TextStyle(
-                            color: Colors.grey[800],
-                            fontSize: 12,
-                            fontFamily: 'Arial',
-                            fontStyle: FontStyle.italic,
+
+                        const SizedBox(height: 24),
+                        // Footer Note
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.grey[50],
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey[200]!),
                           ),
-                          textAlign: TextAlign.center,
+                          child: Text(
+                            '🚨 Emergency Monitoring System\nStay connected for real-time disaster response',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              height: 1.4,
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -306,28 +339,45 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen>
     required String label,
     TextInputType? keyboardType,
     bool obscure = false,
+    IconData? prefixIcon,
     Widget? suffixIcon,
     String? Function(String?)? validator,
     void Function(String?)? onSaved,
   }) {
     return TextFormField(
-      style: const TextStyle(color: Colors.black, fontFamily: 'Arial'),
+      style: const TextStyle(color: Colors.black87),
       keyboardType: keyboardType,
       obscureText: obscure,
       validator: validator,
       onSaved: onSaved,
       decoration: InputDecoration(
         labelText: label,
-        labelStyle: const TextStyle(color: Colors.black, fontFamily: 'Arial'),
+        labelStyle: TextStyle(
+          color: Colors.grey[700],
+          fontWeight: FontWeight.w500,
+        ),
+        prefixIcon: prefixIcon != null
+            ? Icon(prefixIcon, color: Colors.grey[600], size: 20)
+            : null,
+        suffixIcon: suffixIcon,
+        filled: true,
+        fillColor: Colors.grey[50],
         enabledBorder: OutlineInputBorder(
-          borderSide: const BorderSide(color: Colors.black),
+          borderSide: BorderSide(color: Colors.grey[400]!),
           borderRadius: BorderRadius.circular(12),
         ),
         focusedBorder: OutlineInputBorder(
-          borderSide: const BorderSide(color: Colors.black, width: 2),
+          borderSide: const BorderSide(color: Colors.blue, width: 2),
           borderRadius: BorderRadius.circular(12),
         ),
-        suffixIcon: suffixIcon,
+        errorBorder: OutlineInputBorder(
+          borderSide: const BorderSide(color: Colors.red, width: 1),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderSide: const BorderSide(color: Colors.red, width: 2),
+          borderRadius: BorderRadius.circular(12),
+        ),
       ),
     );
   }

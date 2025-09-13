@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:radar_dashboard/components/involved_barangay.dart';
 import 'package:radar_dashboard/components/incident_report.dart';
@@ -38,13 +39,27 @@ class DashboardScreen extends StatelessWidget {
         fontWeight: FontWeight.bold,
       ),
       actions: [
-        IconButton(
-          icon: const Icon(Icons.notifications_outlined, color: Colors.white),
-          onPressed: () {},
-        ),
-        IconButton(
-          icon: const Icon(Icons.settings_outlined, color: Colors.white),
-          onPressed: () {},
+        // 🔹 Admin Panel button (only for admins)
+        FutureBuilder<DocumentSnapshot>(
+          future: FirebaseFirestore.instance
+              .collection('dashboard_users')
+              .doc(FirebaseAuth.instance.currentUser!.uid)
+              .get(),
+          builder: (context, snapshot) {
+            if (!snapshot.hasData) return const SizedBox.shrink();
+            if (!snapshot.data!.exists) return const SizedBox.shrink();
+
+            final role = snapshot.data!['role'] ?? 'user';
+            if (role != 'admin') return const SizedBox.shrink();
+
+            return IconButton(
+              icon: const Icon(Icons.admin_panel_settings_outlined, color: Colors.white),
+              tooltip: 'Admin Panel',
+              onPressed: () {
+                Navigator.pushNamed(context, '/admin-panel');
+              },
+            );
+          },
         ),
       ],
     );
@@ -73,7 +88,7 @@ class DashboardScreen extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final isWide = constraints.maxWidth > 1000;
-        
+
         return isWide
             ? Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -109,8 +124,8 @@ class DashboardScreen extends StatelessWidget {
     return Card(
       elevation: 1,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
+      child: const Padding(
+        padding: EdgeInsets.all(16),
         child: IncidentStatsWidget(),
       ),
     );
@@ -120,7 +135,7 @@ class DashboardScreen extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final isWide = constraints.maxWidth > 800;
-        
+
         return Card(
           elevation: 1,
           shape: RoundedRectangleBorder(
@@ -142,12 +157,12 @@ class DashboardScreen extends StatelessWidget {
                     ),
                   )
                 : Column(
-                    children: [
-                      const MonthlyIncidentReport(),
-                      const SizedBox(height: 16),
-                      const InvolvedBarangays(),
-                      const SizedBox(height: 16),
-                      const WeatherMonitoring(),
+                    children: const [
+                      MonthlyIncidentReport(),
+                      SizedBox(height: 16),
+                      InvolvedBarangays(),
+                      SizedBox(height: 16),
+                      WeatherMonitoring(),
                     ],
                   ),
           ),
@@ -163,7 +178,7 @@ class IncidentStatsWidget extends StatelessWidget {
     StatItem(Icons.car_crash_outlined, 'Accidents', 'Accident', Colors.orange),
     StatItem(Icons.flood_outlined, 'Flood', 'Flood', Colors.blue),
     StatItem(Icons.warning_outlined, 'Other', 'Other Accidents', Colors.red),
-    StatItem(Icons.list_alt, 'Total', 'Total', Colors.purple, isTotal: true), 
+    StatItem(Icons.list_alt, 'Total', 'Total', Colors.purple, isTotal: true),
   ];
 
   const IncidentStatsWidget({super.key});
@@ -177,7 +192,7 @@ class IncidentStatsWidget extends StatelessWidget {
         if (snapshot.hasError) return const ErrorDisplay();
 
         final incidents = snapshot.data!.docs;
-        
+
         return Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: stats.map((stat) {
@@ -190,7 +205,9 @@ class IncidentStatsWidget extends StatelessWidget {
                 return type != 'Fire' && type != 'Flood' && type != 'Accident';
               }).length;
             } else {
-              count = incidents.where((doc) => doc['incidentType'] == stat.type).length;
+              count = incidents
+                  .where((doc) => doc['incidentType'] == stat.type)
+                  .length;
             }
             return StatItemWidget(stat: stat, count: count);
           }).toList(),
@@ -207,7 +224,7 @@ class StatItem {
   final Color color;
   final bool isTotal;
 
-  const StatItem(this.icon, this.label, this.type, this.color, 
+  const StatItem(this.icon, this.label, this.type, this.color,
       {this.isTotal = false});
 }
 
@@ -242,16 +259,17 @@ class StatItemWidget extends StatelessWidget {
           Text(
             '$count',
             style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: Theme.of(context).colorScheme.onSurface,
-            ),
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
           ),
           const SizedBox(height: 4),
           Text(
             stat.label,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-            ),
+                  color: Theme.of(context).colorScheme.onSurface
+                      .withOpacity(0.7),
+                ),
           ),
         ],
       ),
@@ -289,4 +307,3 @@ class ErrorDisplay extends StatelessWidget {
     );
   }
 }
-

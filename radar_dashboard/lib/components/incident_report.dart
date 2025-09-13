@@ -5,10 +5,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:radar_dashboard/components/section_header.dart';
-
-// NEW: CSV + file path helpers
 import 'package:csv/csv.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:open_file/open_file.dart';
 
 class IncidentReportScreen extends StatefulWidget {
   const IncidentReportScreen({super.key});
@@ -21,15 +20,12 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
   final ScrollController _verticalScrollController = ScrollController();
   final ScrollController _horizontalScrollController = ScrollController();
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final TextEditingController _searchController = TextEditingController();
 
   String _searchQuery = '';
   String _selectedType = 'All';
   String _userRole = '';
-
-  // NEW: Date range filter
   DateTimeRange? _dateRange;
-
-  // Keep the latest filtered snapshot for CSV export
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _lastFilteredDocs = [];
 
   final List<String> _incidentTypes = const [
@@ -37,20 +33,35 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
     'Fire',
     'Accident',
     'Flood',
-    'Other Accidents',
+    'Other',
   ];
 
   @override
   void initState() {
     super.initState();
     _getUserRole();
+    _searchController.addListener(() {
+      setState(() {
+        _searchQuery = _searchController.text.toLowerCase();
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _verticalScrollController.dispose();
+    _horizontalScrollController.dispose();
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _getUserRole() async {
     final user = _auth.currentUser;
     if (user != null) {
-      final doc =
-          await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
       setState(() {
         _userRole = (doc.data()?['role'] as String?) ?? 'user';
       });
@@ -63,19 +74,10 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
   bool _isSameDay(DateTime a, DateTime b) =>
       a.year == b.year && a.month == b.month && a.day == b.day;
 
-  @override
-  void dispose() {
-    _verticalScrollController.dispose();
-    _horizontalScrollController.dispose();
-    super.dispose();
-  }
-
-  // Build a Firestore query based on date range (server-side filtering)
   Query<Map<String, dynamic>> _buildQuery() {
     Query<Map<String, dynamic>> q =
         FirebaseFirestore.instance.collection('incidents');
 
-    // If date range is set, apply where filters. Always orderBy timestamp when filtering by it.
     if (_dateRange != null) {
       final start = DateTime(
         _dateRange!.start.year,
@@ -109,8 +111,8 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
     final now = DateTime.now();
     final initial = _dateRange ??
         DateTimeRange(
-          start: DateTime(now.year, now.month, now.day),
-          end: DateTime(now.year, now.month, now.day),
+          start: DateTime(now.year, now.month - 1, now.day),
+          end: now,
         );
 
     final picked = await showDateRangePicker(
@@ -120,16 +122,6 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
       initialDateRange: initial,
       helpText: 'Select Incident Date Range',
       saveText: 'Apply',
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: Theme.of(context).colorScheme.copyWith(
-                  primary: Colors.redAccent,
-                ),
-          ),
-          child: child!,
-        );
-      },
     );
 
     if (picked != null) {
@@ -146,15 +138,12 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
   Future<void> _exportCsv() async {
     try {
       if (_lastFilteredDocs.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No data to export.')),
-          );
-        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No data to export.')),
+        );
         return;
       }
 
-      // Build rows: header + data
       final rows = <List<dynamic>>[];
       rows.add([
         'ID',
@@ -164,10 +153,16 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
         'Time',
         'Status',
         'Reporter',
+        'Contact Number',
+        'Description',
+        'Requires Review',
+        'Suspicion Score',
+        'Latitude',
+        'Longitude',
       ]);
 
-      final dfDate = DateFormat('MMM d, yyyy');
-      final dfTime = DateFormat('h:mm a');
+      final dfDate = DateFormat('yyyy-MM-dd');
+      final dfTime = DateFormat('HH:mm:ss');
 
       for (final doc in _lastFilteredDocs) {
         final data = doc.data();
@@ -177,53 +172,66 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
         final location = (data['address'] ?? '').toString();
         final type = (data['incidentType'] ?? '').toString();
         final status = (data['status'] ?? '').toString();
-        final reporter = (data['reportedBy'] ?? data['reporter'] ?? '').toString();
+        final reporter = (data['name'] ?? data['reportedBy'] ?? 'Anonymous').toString();
+        final contactNumber = (data['contactNumber'] ?? '').toString();
+        final description = (data['description'] ?? '').toString();
+        final requiresReview = (data['requiresReview'] ?? false).toString();
+        final suspicionScore = (data['suspicionScore'] ?? 0.0).toString();
+        final latitude = (data['latitude'] ?? 0.0).toString();
+        final longitude = (data['longitude'] ?? 0.0).toString();
 
         rows.add([
-          doc.id,
+          doc.id.substring(0, 8),
           location,
           type,
           dateStr,
           timeStr,
           status,
           reporter,
+          contactNumber,
+          description.replaceAll('\n', ' '),
+          requiresReview,
+          suspicionScore,
+          latitude,
+          longitude,
         ]);
       }
 
       final csv = const ListToCsvConverter().convert(rows);
-
-      // Choose a writable directory and file name
-      final dir = await getApplicationDocumentsDirectory();
+      final dir = await getTemporaryDirectory();
       final safeFrom = _dateRange?.start != null
-          ? DateFormat('yyyyMMdd').format(_dateRange!.start)
+          ? dfDate.format(_dateRange!.start)
           : 'all';
       final safeTo = _dateRange?.end != null
-          ? DateFormat('yyyyMMdd').format(_dateRange!.end)
+          ? dfDate.format(_dateRange!.end)
           : 'all';
       final filename = 'incidents_${safeFrom}_to_$safeTo.csv';
-
       final file = File('${dir.path}/$filename');
+      
       await file.writeAsString(csv);
+      await OpenFile.open(file.path);
 
-      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('CSV exported: ${file.path}')),
+        SnackBar(
+          content: Text('CSV exported successfully!'),
+          backgroundColor: Colors.green,
+        ),
       );
     } catch (e) {
-      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Export failed: $e')),
+        SnackBar(
+          content: Text('Export failed: $e'),
+          backgroundColor: Colors.red,
+        ),
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final dateLabel = () {
-      if (_dateRange == null) return 'All Dates';
-      final f = DateFormat('MMM d, yyyy');
-      return '${f.format(_dateRange!.start)}  —  ${f.format(_dateRange!.end)}';
-    }();
+    final dateLabel = _dateRange == null 
+        ? 'All Dates' 
+        : '${DateFormat('MMM d, yyyy').format(_dateRange!.start)} - ${DateFormat('MMM d, yyyy').format(_dateRange!.end)}';
 
     return Card(
       color: Colors.white,
@@ -234,25 +242,24 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header + actions row
             Row(
               children: [
                 const Expanded(
                   child: SectionHeader(
                     icon: Icons.warning_amber_outlined,
-                    title: 'EMERGENCIES',
+                    title: 'EMERGENCIES', subtitle: '',
                   ),
                 ),
-                // Export button (always visible)
                 Tooltip(
                   message: 'Export filtered results to CSV',
                   child: ElevatedButton.icon(
                     onPressed: _exportCsv,
-                    icon: const Icon(Icons.download),
+                    icon: const Icon(Icons.download, size: 18),
                     label: const Text('Export CSV'),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.black87,
+                      backgroundColor: Colors.blue[800],
                       foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10),
                       ),
@@ -264,41 +271,33 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
 
             const SizedBox(height: 16),
 
-            // Search + type filter + date filter row
             Row(
               children: [
-                // Search
                 Expanded(
                   flex: 3,
                   child: TextField(
+                    controller: _searchController,
                     decoration: InputDecoration(
-                      hintText: 'Search by location or type',
+                      hintText: 'Search by location, type, or description...',
                       prefixIcon: const Icon(Icons.search),
                       filled: true,
-                      fillColor: Colors.grey[100],
-                      contentPadding:
-                          const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+                      fillColor: Colors.grey[50],
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                         borderSide: BorderSide.none,
                       ),
                     ),
-                    onChanged: (value) {
-                      setState(() {
-                        _searchQuery = value.toLowerCase();
-                      });
-                    },
                   ),
                 ),
                 const SizedBox(width: 12),
 
-                // Type dropdown
                 Expanded(
                   flex: 2,
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     decoration: BoxDecoration(
-                      color: Colors.grey[100],
+                      color: Colors.grey[50],
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: DropdownButton<String>(
@@ -311,11 +310,10 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                           _selectedType = newValue!;
                         });
                       },
-                      items: _incidentTypes
-                          .map<DropdownMenuItem<String>>((String type) {
+                      items: _incidentTypes.map((String type) {
                         return DropdownMenuItem<String>(
                           value: type,
-                          child: Text(type),
+                          child: Text(type, style: const TextStyle(fontSize: 14)),
                         );
                       }).toList(),
                     ),
@@ -323,7 +321,6 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                 ),
                 const SizedBox(width: 12),
 
-                // Date range selector
                 Expanded(
                   flex: 3,
                   child: Row(
@@ -331,31 +328,25 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                       Expanded(
                         child: OutlinedButton.icon(
                           onPressed: _pickDateRange,
-                          icon: const Icon(Icons.date_range),
+                          icon: const Icon(Icons.calendar_today, size: 18),
                           label: Text(
                             dateLabel,
                             overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 14),
                           ),
                           style: OutlinedButton.styleFrom(
-                            padding:
-                                const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
                           ),
                         ),
                       ),
-                      const SizedBox(width: 8),
                       if (_dateRange != null)
-                        Tooltip(
-                          message: 'Clear date range',
-                          child: IconButton(
-                            onPressed: _clearDateRange,
-                            icon: const Icon(Icons.close),
-                            style: IconButton.styleFrom(
-                              backgroundColor: Colors.grey[200],
-                            ),
-                          ),
+                        IconButton(
+                          onPressed: _clearDateRange,
+                          icon: const Icon(Icons.clear, size: 18),
+                          tooltip: 'Clear date range',
                         ),
                     ],
                   ),
@@ -365,29 +356,26 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
 
             const SizedBox(height: 20),
 
-            // Stream + table + stats
             StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _buildQuery().snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
-                  return const Center(
+                  return Center(
                     child: Text(
-                      'Error loading incidents',
-                      style: TextStyle(color: Colors.red),
+                      'Error loading incidents: ${snapshot.error}',
+                      style: const TextStyle(color: Colors.red),
                     ),
                   );
                 }
 
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const SizedBox(
-                    height: 250,
+                    height: 200,
                     child: Center(child: CircularProgressIndicator()),
                   );
                 }
 
                 final allDocs = snapshot.data!.docs;
-
-                // Stats (resolved today / yesterday)
                 final today = DateTime.now();
                 final yesterday = today.subtract(const Duration(days: 1));
                 int resolvedToday = 0;
@@ -395,57 +383,69 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
 
                 for (var doc in allDocs) {
                   final data = doc.data();
-                  final resolvedAt = data['resolvedAt'] as Timestamp?;
-                  if (resolvedAt != null) {
-                    final d = resolvedAt.toDate();
-                    if (_isSameDay(d, today)) resolvedToday++;
-                    if (_isSameDay(d, yesterday)) resolvedYesterday++;
+                  final status = (data['status'] ?? '').toString().toLowerCase();
+
+                  if (status == 'resolved') {
+                    // Use resolvedAt if available, otherwise fallback to main timestamp
+                    final resolvedAt = data['resolvedAt'] as Timestamp?;
+                    final ts = resolvedAt ?? data['timestamp'] as Timestamp?;
+                    if (ts != null) {
+                      final d = ts.toDate();
+                      if (_isSameDay(d, today)) resolvedToday++;
+                      if (_isSameDay(d, yesterday)) resolvedYesterday++;
+                    }
                   }
                 }
 
-                // Client-side filters: search + type
+
                 final filtered = allDocs.where((doc) {
                   final data = doc.data();
-                  final location =
-                      (data['address'] ?? '').toString().toLowerCase();
-                  final type =
-                      (data['incidentType'] ?? '').toString().toLowerCase();
+                  final location = (data['address'] ?? '').toString().toLowerCase();
+                  final type = (data['incidentType'] ?? '').toString().toLowerCase();
+                  final contactNumber = (data['contactNumber'] ?? '').toString().toLowerCase();
+                  final description = (data['description'] ?? '').toString().toLowerCase();
 
                   final matchesSearch = _searchQuery.isEmpty ||
                       location.contains(_searchQuery) ||
-                      type.contains(_searchQuery);
+                      type.contains(_searchQuery) ||
+                      contactNumber.contains(_searchQuery) ||
+                      description.contains(_searchQuery);
 
                   final matchesType = _selectedType == 'All' ||
-                      type == _selectedType.toLowerCase();
+                      (_selectedType == 'Other' ? 
+                       !['fire', 'accident', 'flood'].contains(type) : 
+                       type == _selectedType.toLowerCase());
 
                   return matchesSearch && matchesType;
                 }).toList();
 
-                // Update last filtered cache for CSV export
                 _lastFilteredDocs = filtered;
 
                 if (filtered.isEmpty) {
                   return const SizedBox(
                     height: 200,
-                    child: Center(child: Text('No matching incidents found')),
+                    child: Center(
+                      child: Text(
+                        'No matching incidents found',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ),
                   );
                 }
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Stats
                     Row(
                       children: [
                         _buildStatCard('Resolved Today', resolvedToday, Colors.green),
                         const SizedBox(width: 12),
-                        _buildStatCard(
-                            'Resolved Yesterday', resolvedYesterday, Colors.blue),
+                        _buildStatCard('Resolved Yesterday', resolvedYesterday, Colors.blue),
+                        const SizedBox(width: 12),
+                        _buildStatCard('Total Incidents', filtered.length, Colors.orange),
                       ],
                     ),
                     const SizedBox(height: 20),
-
-                    // Table
                     _buildIncidentTable(filtered),
                   ],
                 );
@@ -460,74 +460,63 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
   Widget _buildStatCard(String label, int count, Color color) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: color.withOpacity(0.1),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color),
+          border: Border.all(color: color.withOpacity(0.3)),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(label,
-                style: TextStyle(
-                    fontSize: 12, fontWeight: FontWeight.bold, color: color)),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: color,
+              ),
+            ),
             const SizedBox(height: 4),
-            Text('$count',
-                style: TextStyle(
-                    fontSize: 20, fontWeight: FontWeight.bold, color: color)),
+            Text(
+              count.toString(),
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildIncidentTable(
-      List<QueryDocumentSnapshot<Map<String, dynamic>>> filtered) {
+  Widget _buildIncidentTable(List<QueryDocumentSnapshot<Map<String, dynamic>>> filtered) {
     return SizedBox(
-      height: 250,
+      height: 300,
       child: Scrollbar(
         controller: _verticalScrollController,
         child: SingleChildScrollView(
           controller: _verticalScrollController,
-          scrollDirection: Axis.vertical,
           child: Scrollbar(
             controller: _horizontalScrollController,
-            notificationPredicate: (n) => n.depth == 1,
             child: SingleChildScrollView(
               controller: _horizontalScrollController,
               scrollDirection: Axis.horizontal,
               child: DataTable(
-                columnSpacing: 52,
+                columnSpacing: 24,
                 horizontalMargin: 16,
-                headingRowHeight: 40,
-                dataRowHeight: 56,
+                headingRowHeight: 48,
+                dataRowHeight: 60,
                 columns: const [
-                  DataColumn(
-                      label: Text('ID',
-                          style:
-                              TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                      numeric: true),
-                  DataColumn(
-                      label: Text('LOCATION',
-                          style:
-                              TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
-                  DataColumn(
-                      label: Text('TYPE',
-                          style:
-                              TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
-                  DataColumn(
-                      label: Text('DATE',
-                          style:
-                              TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
-                  DataColumn(
-                      label: Text('TIME',
-                          style:
-                              TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
-                  DataColumn(
-                      label: Text('STATUS',
-                          style:
-                              TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+                  DataColumn(label: Text('ID', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('LOCATION', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('TYPE', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('DATE', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('TIME', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('STATUS', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('ACTIONS', style: TextStyle(fontWeight: FontWeight.bold))),
                 ],
                 rows: filtered.map((doc) => _buildDataRow(doc)).toList(),
               ),
@@ -549,12 +538,9 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
         : 'N/A';
     final location = (data['address'] ?? 'Unknown').toString();
     final rawType = (data['incidentType'] ?? '').toString();
-    final normalizedType = rawType.toLowerCase();
     final status = (data['status'] ?? 'pending').toString().toLowerCase();
-
-    final knownTypes = ['fire', 'accident', 'flood'];
-    final incidentType =
-        knownTypes.contains(normalizedType) ? _capitalize(normalizedType) : 'Others';
+    final requiresReview = data['requiresReview'] ?? false;
+    final suspicionScore = data['suspicionScore'] ?? 0.0;
 
     Color statusColor;
     switch (status) {
@@ -567,88 +553,178 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
       case 'pending':
         statusColor = Colors.amber;
         break;
+      case 'under review':
+        statusColor = Colors.red;
+        break;
       default:
         statusColor = Colors.grey;
     }
 
+    final isSuspicious = requiresReview == true || (suspicionScore as double) > 0.5;
+
     return DataRow(
       cells: [
-        DataCell(Text(doc.id.substring(0, 4),
-            style: const TextStyle(fontSize: 12, fontFamily: 'RobotoMono'))),
-        DataCell(SizedBox(
-          width: 170,
-          child: Text(
-            location,
-            style: const TextStyle(fontSize: 12),
-            overflow: TextOverflow.ellipsis,
-            maxLines: 2,
+        DataCell(
+          Row(
+            children: [
+              Text(
+                doc.id.substring(0, 6),
+                style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 12),
+              ),
+              if (isSuspicious)
+                const Padding(
+                  padding: EdgeInsets.only(left: 4.0),
+                  child: Icon(Icons.warning, color: Colors.red, size: 16),
+                ),
+            ],
           ),
-        )),
-        DataCell(SizedBox(
-          width: 80,
-          child: Text(
-            incidentType,
-            style: const TextStyle(fontSize: 12),
-            overflow: TextOverflow.ellipsis,
+        ),
+        DataCell(
+          SizedBox(
+            width: 200,
+            child: Text(
+              location,
+              overflow: TextOverflow.ellipsis,
+              maxLines: 2,
+            ),
           ),
-        )),
-        DataCell(Text(date, style: const TextStyle(fontSize: 12))),
-        DataCell(Text(time, style: const TextStyle(fontSize: 12))),
+        ),
+        DataCell(Text(_capitalize(rawType))),
+        DataCell(Text(date)),
+        DataCell(Text(time)),
         DataCell(
           _userRole == 'admin'
-              ? _StatusDropdown(docId: doc.id, currentStatus: status)
+              ? _StatusDropdown(
+                  docId: doc.id, 
+                  currentStatus: status,
+                  requiresReview: requiresReview as bool,
+                  suspicionScore: suspicionScore as double,
+                )
               : Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    color: statusColor.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(12),
+                    color: statusColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(16),
                     border: Border.all(color: statusColor),
                   ),
                   child: Text(
                     _capitalize(status),
                     style: TextStyle(
-                        fontSize: 12, color: statusColor, fontWeight: FontWeight.bold),
+                      color: statusColor,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
                   ),
                 ),
         ),
+        DataCell(
+          IconButton(
+            icon: const Icon(Icons.visibility, size: 18),
+            onPressed: () {
+              // Add view details functionality
+              _showIncidentDetails(doc);
+            },
+          ),
+        ),
       ],
+    );
+  }
+
+  void _showIncidentDetails(DocumentSnapshot<Map<String, dynamic>> doc) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Incident Details'),
+        content: SingleChildScrollView(
+          child: Text('Details for incident: ${doc.id}'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
     );
   }
 }
 
 class _StatusDropdown extends StatefulWidget {
-  final String currentStatus;
   final String docId;
+  final String currentStatus;
+  final bool requiresReview;
+  final double suspicionScore;
 
-  const _StatusDropdown({required this.currentStatus, required this.docId});
+  const _StatusDropdown({
+    required this.docId,
+    required this.currentStatus,
+    required this.requiresReview,
+    required this.suspicionScore,
+  });
 
   @override
   State<_StatusDropdown> createState() => _StatusDropdownState();
 }
 
 class _StatusDropdownState extends State<_StatusDropdown> {
-  final List<String> statusOptions = const ['Pending', 'In Progress', 'Resolved'];
   late String _selectedStatus;
+  bool _isUpdating = false;
+
+  final List<String> statusOptions = ['pending', 'in progress', 'resolved', 'under review'];
 
   @override
   void initState() {
     super.initState();
-    _selectedStatus = _capitalize(widget.currentStatus);
+    _selectedStatus = widget.currentStatus;
   }
 
-  static String _capitalize(String input) =>
-      input.isNotEmpty ? input[0].toUpperCase() + input.substring(1) : input;
-
   Color _getStatusColor(String status) {
-    switch (status.toLowerCase()) {
+    switch (status) {
       case 'resolved':
         return Colors.green;
       case 'in progress':
         return Colors.orange;
       case 'pending':
         return Colors.amber;
+      case 'under review':
+        return Colors.red;
       default:
         return Colors.grey;
+    }
+  }
+
+  Future<void> _updateStatus(String newStatus) async {
+    setState(() => _isUpdating = true);
+
+    try {
+      final updateData = <String, dynamic>{
+        'status': newStatus,
+      };
+
+      if (newStatus == 'resolved') {
+        updateData['resolvedAt'] = FieldValue.serverTimestamp();
+      }
+
+      // Add to status updates timeline
+      final statusUpdate = {
+        'status': newStatus,
+        'timestamp': FieldValue.serverTimestamp(),
+        'note': 'Status updated by admin',
+        'updatedBy': FirebaseAuth.instance.currentUser?.uid,
+      };
+
+      await FirebaseFirestore.instance.collection('incidents').doc(widget.docId).update({
+        ...updateData,
+        'statusUpdates': FieldValue.arrayUnion([statusUpdate]),
+      });
+
+      setState(() => _selectedStatus = newStatus);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to update status: $e')),
+      );
+    } finally {
+      setState(() => _isUpdating = false);
     }
   }
 
@@ -659,53 +735,38 @@ class _StatusDropdownState extends State<_StatusDropdown> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
-        color: statusColor.withOpacity(0.15),
-        borderRadius: BorderRadius.circular(12),
+        color: statusColor.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(color: statusColor),
       ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          value: _selectedStatus,
-          icon: const Icon(Icons.arrow_drop_down, size: 18),
-          onChanged: (String? newValue) async {
-            if (newValue == null) return;
-
-            setState(() {
-              _selectedStatus = newValue;
-            });
-
-            final lower = newValue.toLowerCase();
-            final update = <String, dynamic>{
-              'status': lower,
-              // set resolvedAt when moving to resolved; clear if moved away
-              'resolvedAt': lower == 'resolved'
-                  ? FieldValue.serverTimestamp()
-                  : null,
-            };
-
-            // If you prefer to *not* delete resolvedAt when status changes away
-            // from resolved, replace the 'null' above with FieldValue.delete().
-
-            await FirebaseFirestore.instance
-                .collection('incidents')
-                .doc(widget.docId)
-                .update(update);
-          },
-          items: statusOptions.map((String status) {
-            return DropdownMenuItem<String>(
-              value: status,
-              child: Text(
-                status,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: _getStatusColor(status),
-                ),
+      child: _isUpdating
+          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+          : DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _selectedStatus,
+                icon: const Icon(Icons.arrow_drop_down, size: 18),
+                onChanged: (String? newValue) {
+                  if (newValue != null && newValue != _selectedStatus) {
+                    _updateStatus(newValue);
+                  }
+                },
+                items: statusOptions.map((String status) {
+                  return DropdownMenuItem<String>(
+                    value: status,
+                    child: Text(
+                      _capitalize(status),
+                      style: TextStyle(
+                        color: _getStatusColor(status),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  );
+                }).toList(),
               ),
-            );
-          }).toList(),
-        ),
-      ),
+            ),
     );
   }
+
+  String _capitalize(String input) =>
+      input.isNotEmpty ? input[0].toUpperCase() + input.substring(1) : input;
 }
