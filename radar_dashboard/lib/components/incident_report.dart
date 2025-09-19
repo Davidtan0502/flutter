@@ -135,98 +135,6 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
     setState(() => _dateRange = null);
   }
 
-  Future<void> _exportCsv() async {
-    try {
-      if (_lastFilteredDocs.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No data to export.')),
-        );
-        return;
-      }
-
-      final rows = <List<dynamic>>[];
-      rows.add([
-        'ID',
-        'Location',
-        'Type',
-        'Date',
-        'Time',
-        'Status',
-        'Reporter',
-        'Contact Number',
-        'Description',
-        'Requires Review',
-        'Suspicion Score',
-        'Latitude',
-        'Longitude',
-      ]);
-
-      final dfDate = DateFormat('yyyy-MM-dd');
-      final dfTime = DateFormat('HH:mm:ss');
-
-      for (final doc in _lastFilteredDocs) {
-        final data = doc.data();
-        final ts = data['timestamp'] as Timestamp?;
-        final dateStr = ts != null ? dfDate.format(ts.toDate()) : 'N/A';
-        final timeStr = ts != null ? dfTime.format(ts.toDate()) : 'N/A';
-        final location = (data['address'] ?? '').toString();
-        final type = (data['incidentType'] ?? '').toString();
-        final status = (data['status'] ?? '').toString();
-        final reporter = (data['name'] ?? data['reportedBy'] ?? 'Anonymous').toString();
-        final contactNumber = (data['contactNumber'] ?? '').toString();
-        final description = (data['description'] ?? '').toString();
-        final requiresReview = (data['requiresReview'] ?? false).toString();
-        final suspicionScore = (data['suspicionScore'] ?? 0.0).toString();
-        final latitude = (data['latitude'] ?? 0.0).toString();
-        final longitude = (data['longitude'] ?? 0.0).toString();
-
-        rows.add([
-          doc.id.substring(0, 8),
-          location,
-          type,
-          dateStr,
-          timeStr,
-          status,
-          reporter,
-          contactNumber,
-          description.replaceAll('\n', ' '),
-          requiresReview,
-          suspicionScore,
-          latitude,
-          longitude,
-        ]);
-      }
-
-      final csv = const ListToCsvConverter().convert(rows);
-      final dir = await getTemporaryDirectory();
-      final safeFrom = _dateRange?.start != null
-          ? dfDate.format(_dateRange!.start)
-          : 'all';
-      final safeTo = _dateRange?.end != null
-          ? dfDate.format(_dateRange!.end)
-          : 'all';
-      final filename = 'incidents_${safeFrom}_to_$safeTo.csv';
-      final file = File('${dir.path}/$filename');
-      
-      await file.writeAsString(csv);
-      await OpenFile.open(file.path);
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('CSV exported successfully!'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Export failed: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final dateLabel = _dateRange == null 
@@ -248,22 +156,6 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                   child: SectionHeader(
                     icon: Icons.warning_amber_outlined,
                     title: 'EMERGENCIES', subtitle: '',
-                  ),
-                ),
-                Tooltip(
-                  message: 'Export filtered results to CSV',
-                  child: ElevatedButton.icon(
-                    onPressed: _exportCsv,
-                    icon: const Icon(Icons.download, size: 18),
-                    label: const Text('Export CSV'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blue[800],
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
                   ),
                 ),
               ],
@@ -548,13 +440,16 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
         statusColor = Colors.green;
         break;
       case 'in progress':
-        statusColor = Colors.orange;
+        statusColor = const Color(0xFF2196F3);
         break;
       case 'pending':
         statusColor = Colors.amber;
         break;
       case 'under review':
-        statusColor = Colors.red;
+        statusColor = const Color.fromRGBO(156, 39, 176, 1);
+        break;
+      case 'declined':
+        statusColor = const Color.fromARGB(255, 176, 39, 39);
         break;
       default:
         statusColor = Colors.grey;
@@ -683,11 +578,13 @@ class _StatusDropdownState extends State<_StatusDropdown> {
       case 'resolved':
         return Colors.green;
       case 'in progress':
-        return Colors.orange;
+        return const Color(0xFF2196F3);
       case 'pending':
         return Colors.amber;
+      case 'declined':
+        return const Color.fromARGB(255, 176, 39, 39);
       case 'under review':
-        return Colors.red;
+        return const Color.fromRGBO(156, 39, 176, 1);
       default:
         return Colors.grey;
     }
