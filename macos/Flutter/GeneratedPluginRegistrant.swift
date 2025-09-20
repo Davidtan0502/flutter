@@ -25,8 +25,16 @@ import url_launcher_macos
 
 func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
   FLTFirebaseFirestorePlugin.register(with: registry.registrar(forPlugin: "FLTFirebaseFirestorePlugin"))
+<<<<<<< HEAD:radar_dashboard/macos/Flutter/GeneratedPluginRegistrant.swift
   ConnectivityPlusPlugin.register(with: registry.registrar(forPlugin: "ConnectivityPlusPlugin"))
   FileSelectorPlugin.register(with: registry.registrar(forPlugin: "FileSelectorPlugin"))
+=======
+<<<<<<< HEAD:macos/Flutter/GeneratedPluginRegistrant.swift
+  ConnectivityPlusPlugin.register(with: registry.registrar(forPlugin: "ConnectivityPlusPlugin"))
+  FileSelectorPlugin.register(with: registry.registrar(forPlugin: "FileSelectorPlugin"))
+=======
+>>>>>>> 6cc2cad3b8411bcb9ecce56b7c8261c71c4ab1bb:radar_dashboard/macos/Flutter/GeneratedPluginRegistrant.swift
+>>>>>>> 3f8cf6e859780e24f1bb117e8a97c93357925917:macos/Flutter/GeneratedPluginRegistrant.swift
   FirebaseAnalyticsPlugin.register(with: registry.registrar(forPlugin: "FirebaseAnalyticsPlugin"))
   FLTFirebaseAuthPlugin.register(with: registry.registrar(forPlugin: "FLTFirebaseAuthPlugin"))
   FLTFirebaseCorePlugin.register(with: registry.registrar(forPlugin: "FLTFirebaseCorePlugin"))

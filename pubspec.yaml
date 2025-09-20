@@ -67,11 +67,24 @@ dependencies:
   open_file: ^3.5.10
   cached_network_image: ^3.4.1
   photo_view: ^0.15.0
+<<<<<<< HEAD:radar_dashboard/pubspec.yaml
   firebase_storage: ^13.0.1
   shimmer: ^3.0.0
   connectivity_plus: ^7.0.0
   flutter_cache_manager: ^3.4.1
   image_picker: ^1.2.0
+=======
+<<<<<<< HEAD:pubspec.yaml
+  firebase_storage: ^13.0.1
+  shimmer: ^3.0.0
+  connectivity_plus: ^7.0.0
+  flutter_cache_manager: ^3.4.1
+  image_picker: ^1.2.0
+=======
+  firebase_storage: ^12.4.10
+  shimmer: ^3.0.0
+>>>>>>> 6cc2cad3b8411bcb9ecce56b7c8261c71c4ab1bb:radar_dashboard/pubspec.yaml
+>>>>>>> 3f8cf6e859780e24f1bb117e8a97c93357925917:pubspec.yaml
 
 
 dev_dependencies:
