@@ -170,7 +170,7 @@ class _MapMonitoringState extends State<MapMonitoring> {
         });
         _mapController?.animateCamera(
           CameraUpdate.newCameraPosition(
-            CameraPosition(target: pos, zoom: 15),
+            CameraPosition(target: pos, zoom: 18),
           ),
         );
       },
@@ -207,7 +207,7 @@ class _MapMonitoringState extends State<MapMonitoring> {
         icon = Icons.check_circle;
         break;
       case 'in progress':
-        color = Colors.orange;
+        color = Colors.blue;
         icon = Icons.build_circle;
         break;
       case 'pending':
@@ -217,6 +217,10 @@ class _MapMonitoringState extends State<MapMonitoring> {
       case 'under review':
         color = Colors.purple;
         icon = Icons.visibility;
+        break;
+      case 'declined':
+        color = Colors.red;
+        icon = Icons.cancel;
         break;
       default:
         color = Colors.grey;

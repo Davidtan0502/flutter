@@ -2,7 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:radar_dashboard/components/involved_barangay.dart';
-import 'package:radar_dashboard/components/incident_report.dart';
+import 'package:radar_dashboard/components/report_table.dart';
 import 'package:radar_dashboard/components/map_monitoring.dart';
 import 'package:radar_dashboard/components/weather_monitoring.dart';
 import 'package:radar_dashboard/components/monthly_incident_report.dart';

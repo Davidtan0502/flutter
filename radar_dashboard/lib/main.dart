@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:radar_dashboard/login/login_register_screen.dart';
+import 'package:radar_dashboard/login/terms_and_condition.dart';
 import 'package:radar_dashboard/navigation/main_navigation.dart';
-import 'package:radar_dashboard/login/admin_panel_screen.dart'; // ⬅️ add this
+import 'package:radar_dashboard/login/admin_panel_screen.dart'; 
 import 'package:shared_preferences/shared_preferences.dart';
 import 'firebase_options.dart';
 
@@ -72,7 +73,8 @@ class _ProjectRadarAppState extends State<ProjectRadarApp> {
               onToggleTheme: toggleTheme,
               userRole: 'user',
             ),
-        '/admin-panel': (context) => const AdminPanelScreen(), // ⬅️ Add admin panel
+        '/admin-panel': (context) => const AdminPanelScreen(),
+        '/terms': (context) => const TermsAndConditionsScreen(), // ⬅️ added
       },
     );
   }

@@ -262,7 +262,7 @@ class _MapMonitoringScreenState extends State<MapMonitoringpingScreen> {
                   ),
                 ],
               ),
-            )).toList(),
+            )),
           ],
         ),
       ),
