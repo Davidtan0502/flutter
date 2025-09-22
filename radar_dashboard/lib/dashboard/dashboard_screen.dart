@@ -7,13 +7,27 @@ import 'package:radar_dashboard/components/map_monitoring.dart';
 import 'package:radar_dashboard/components/weather_monitoring.dart';
 import 'package:radar_dashboard/components/monthly_incident_report.dart';
 
-class DashboardScreen extends StatelessWidget {
+class DashboardScreen extends StatefulWidget {
   final VoidCallback onMenuPressed;
 
   const DashboardScreen({
     super.key,
     required this.onMenuPressed,
   });
+
+  @override
+  State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  DateTimeRange? _dateRange;
+
+  void _updateDateRange(DateTimeRange? newDateRange) {
+    print('Date range updated: $newDateRange');
+    setState(() {
+      _dateRange = newDateRange;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -28,7 +42,7 @@ class DashboardScreen extends StatelessWidget {
     return AppBar(
       leading: IconButton(
         icon: const Icon(Icons.menu, color: Colors.white),
-        onPressed: onMenuPressed,
+        onPressed: widget.onMenuPressed,
       ),
       title: const Text('EMERGENCY RESPONSE DASHBOARD'),
       centerTitle: true,
@@ -39,7 +53,6 @@ class DashboardScreen extends StatelessWidget {
         fontWeight: FontWeight.bold,
       ),
       actions: [
-        // 🔹 Admin Panel button (only for admins)
         FutureBuilder<DocumentSnapshot>(
           future: FirebaseFirestore.instance
               .collection('dashboard_users')
@@ -99,21 +112,30 @@ class DashboardScreen extends StatelessWidget {
                       children: [
                         _buildEmergencyStats(context),
                         const SizedBox(height: 16),
-                        const IncidentReportScreen(),
+                        ReportTableScreen(
+                          dateRange: _dateRange,
+                          onDateRangeChanged: _updateDateRange,
+                        ),
                       ],
                     ),
                   ),
                   const SizedBox(width: 16),
-                  const Expanded(flex: 2, child: MapMonitoring()),
+                  Expanded(
+                    flex: 2,
+                    child: MapMonitoring(dateRange: _dateRange),
+                  ),
                 ],
               )
             : Column(
                 children: [
                   _buildEmergencyStats(context),
                   const SizedBox(height: 16),
-                  const IncidentReportScreen(),
+                  ReportTableScreen(
+                    dateRange: _dateRange,
+                    onDateRangeChanged: _updateDateRange,
+                  ),
                   const SizedBox(height: 16),
-                  const MapMonitoring(),
+                  MapMonitoring(dateRange: _dateRange),
                 ],
               );
       },
@@ -124,9 +146,9 @@ class DashboardScreen extends StatelessWidget {
     return Card(
       elevation: 1,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: const Padding(
-        padding: EdgeInsets.all(16),
-        child: IncidentStatsWidget(),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: IncidentStatsWidget(dateRange: _dateRange),
       ),
     );
   }
@@ -148,21 +170,21 @@ class DashboardScreen extends StatelessWidget {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        const Expanded(child: MonthlyIncidentReport()),
+                        Expanded(child: MonthlyIncidentReport()),
                         const SizedBox(width: 16),
-                        const Expanded(child: InvolvedBarangays()),
+                        Expanded(child: InvolvedBarangays(dateRange: _dateRange)),
                         const SizedBox(width: 16),
                         const Expanded(child: WeatherMonitoring()),
                       ],
                     ),
                   )
                 : Column(
-                    children: const [
+                    children: [
                       MonthlyIncidentReport(),
-                      SizedBox(height: 16),
-                      InvolvedBarangays(),
-                      SizedBox(height: 16),
-                      WeatherMonitoring(),
+                      const SizedBox(height: 16),
+                      InvolvedBarangays(dateRange: _dateRange),
+                      const SizedBox(height: 16),
+                      const WeatherMonitoring(),
                     ],
                   ),
           ),
@@ -173,6 +195,7 @@ class DashboardScreen extends StatelessWidget {
 }
 
 class IncidentStatsWidget extends StatelessWidget {
+  final DateTimeRange? dateRange;
   final List<StatItem> stats = const [
     StatItem(Icons.fireplace_outlined, 'Fire', 'Fire', Colors.deepOrange),
     StatItem(Icons.car_crash_outlined, 'Accidents', 'Accident', Colors.orange),
@@ -181,12 +204,38 @@ class IncidentStatsWidget extends StatelessWidget {
     StatItem(Icons.list_alt, 'Total', 'Total', Colors.purple, isTotal: true),
   ];
 
-  const IncidentStatsWidget({super.key});
+  const IncidentStatsWidget({super.key, this.dateRange});
+
+  Query<Map<String, dynamic>> _buildQuery() {
+    Query<Map<String, dynamic>> q =
+        FirebaseFirestore.instance.collection('incidents');
+
+    if (dateRange != null) {
+      final start = DateTime(
+        dateRange!.start.year,
+        dateRange!.start.month,
+        dateRange!.start.day,
+        0, 0, 0,
+      );
+      final end = DateTime(
+        dateRange!.end.year,
+        dateRange!.end.month,
+        dateRange!.end.day,
+        23, 59, 59, 999,
+      );
+
+      q = q
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(end));
+    }
+
+    return q;
+  }
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance.collection('incidents').snapshots(),
+      stream: _buildQuery().snapshots(),
       builder: (context, snapshot) {
         if (!snapshot.hasData) return const LoadingIndicator();
         if (snapshot.hasError) return const ErrorDisplay();

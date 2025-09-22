@@ -25,6 +25,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
   bool obscureConfirmPassword = true;
   bool termsAccepted = false;
   bool showTermsError = false;
+  bool isResettingPassword = false;
 
   // Form fields
   String email = '';
@@ -261,31 +262,122 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
     }
   }
 
-  // Add a password reset function
+  // Improved password reset function with better validation and feedback
   Future<void> _resetPassword() async {
+    // Use the email from the form if available, otherwise show dialog
     if (email.isEmpty || !email.contains('@')) {
-      _showSnackbar("Please enter a valid email address to reset your password", SnackbarType.error);
+      // Show a dialog to enter email for password reset
+      _showResetPasswordDialog();
       return;
     }
     
+    // Validate email format
+    if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(email)) {
+      _showSnackbar("Please enter a valid email address", SnackbarType.error);
+      return;
+    }
+    
+    await _sendPasswordResetEmail(email);
+  }
+
+  // Show dialog for entering email for password reset
+  void _showResetPasswordDialog() {
+    final TextEditingController emailController = TextEditingController();
+    
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text("Reset Password"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text("Enter your email address to receive password reset instructions:"),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: emailController,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(
+                  labelText: 'Email Address',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter your email address';
+                  }
+                  if (!value.contains('@')) {
+                    return 'Please enter a valid email address';
+                  }
+                  return null;
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text("Cancel"),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                if (emailController.text.isEmpty) {
+                  _showSnackbar("Please enter your email address", SnackbarType.error);
+                  return;
+                }
+                
+                if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(emailController.text)) {
+                  _showSnackbar("Please enter a valid email address", SnackbarType.error);
+                  return;
+                }
+                
+                Navigator.of(context).pop();
+                await _sendPasswordResetEmail(emailController.text);
+              },
+              child: const Text("Send Reset Link"),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // Send password reset email with proper error handling
+  Future<void> _sendPasswordResetEmail(String emailAddress) async {
+    setState(() => isResettingPassword = true);
+    
     try {
-      await _auth.sendPasswordResetEmail(email: email);
-      _showSnackbar("Password reset email sent! Check your inbox for instructions.", SnackbarType.success);
+      await _auth.sendPasswordResetEmail(email: emailAddress);
+      
+      _showSnackbar(
+        "Password reset email sent! Check your inbox for instructions. If you don't see it, check your spam folder.",
+        SnackbarType.success
+      );
+      
+      // Update the email field in the form if it was empty
+      if (this.email.isEmpty) {
+        setState(() => this.email = emailAddress);
+      }
+      
     } on FirebaseAuthException catch (e) {
       String errorMessage;
       switch (e.code) {
         case 'user-not-found':
-          errorMessage = "No account found with this email address.";
+          errorMessage = "No account found with this email address. Please check your email or register for a new account.";
           break;
         case 'invalid-email':
-          errorMessage = "Invalid email address format.";
+          errorMessage = "Invalid email address format. Please check and try again.";
+          break;
+        case 'too-many-requests':
+          errorMessage = "Too many password reset attempts. Please try again later.";
           break;
         default:
           errorMessage = "Failed to send password reset email. Please try again.";
       }
       _showSnackbar(errorMessage, SnackbarType.error);
     } catch (e) {
-      _showSnackbar("An error occurred. Please try again later.", SnackbarType.error);
+      _showSnackbar("An unexpected error occurred. Please try again later.", SnackbarType.error);
+    } finally {
+      setState(() => isResettingPassword = false);
     }
   }
 
@@ -436,16 +528,25 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
                           const SizedBox(height: 12),
                           Align(
                             alignment: Alignment.centerRight,
-                            child: TextButton(
-                              onPressed: _resetPassword,
-                              child: const Text(
-                                'Forgot Password?',
-                                style: TextStyle(
-                                  color: Colors.blue,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
+                            child: isResettingPassword
+                                ? const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 8.0),
+                                    child: SizedBox(
+                                      height: 20,
+                                      width: 20,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    ),
+                                  )
+                                : TextButton(
+                                    onPressed: _resetPassword,
+                                    child: const Text(
+                                      'Forgot Password?',
+                                      style: TextStyle(
+                                        color: Colors.blue,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ),
                           ),
                         ],
 
@@ -583,24 +684,23 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
                               Expanded(
                                 child: GestureDetector(
                                   onTap: () async {
-                                    final agreed = await Navigator.push(
-                                      context,
-                                      PageRouteBuilder(
-                                        pageBuilder: (context, animation, secondaryAnimation) =>
-                                            const TermsAndConditionsScreen(),
-                                        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-                                          return FadeTransition(
-                                            opacity: CurvedAnimation(
-                                              parent: animation,
-                                              curve: Curves.easeInOut,
-                                            ),
-                                            child: child,
-                                          );
-                                        },
-                                        transitionDuration: const Duration(milliseconds: 400),
-                                      ),
-                                    );
-
+                                  final agreed = await Navigator.push(
+                                    context,
+                                    PageRouteBuilder(
+                                      pageBuilder: (context, animation, secondaryAnimation) =>
+                                          const TermsAndConditionsScreen(),
+                                      transitionsBuilder: (context, animation, secondaryAnimation, child) {
+                                        return FadeTransition(
+                                          opacity: CurvedAnimation(
+                                            parent: animation,
+                                            curve: Curves.easeInOut,
+                                          ),
+                                          child: child,
+                                        );
+                                      },
+                                      transitionDuration: const Duration(milliseconds: 400),
+                                    ),
+                                  );
                                     if (agreed == true) {
                                       setState(() {
                                         termsAccepted = true;

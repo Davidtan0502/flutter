@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:animations/animations.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:radar_dashboard/components/report_table.dart';
 import 'package:radar_dashboard/dashboard/dashboard_screen.dart';
 import 'package:radar_dashboard/screens/analytics_screen.dart';
 import 'package:radar_dashboard/screens/incident_report_screen.dart';
 import 'package:radar_dashboard/screens/mapping_screen.dart';
 import 'package:radar_dashboard/screens/settings_screen.dart';
 import 'package:radar_dashboard/login/login_register_screen.dart';
+import 'package:radar_dashboard/notifications/notification_screen.dart'; // Import the notification screen
 
 class NavigationScreen extends StatefulWidget {
   final bool isDarkMode;
@@ -67,6 +67,14 @@ class _NavigationScreenState extends State<NavigationScreen>
         screenBuilder: (onMenuPressed) =>
             AnalyticsScreen(onMenuPressed: onMenuPressed),
       ),
+      // Add Notifications screen for admin only
+      if (widget.userRole == 'admin')
+        NavigationItem(
+          title: 'Notifications',
+          icon: Icons.notifications_rounded,
+          screenBuilder: (onMenuPressed) =>
+              NotificationScreen(onMenuPressed: onMenuPressed),
+        ),
       NavigationItem(
         title: 'Settings',
         icon: Icons.settings_rounded,
@@ -106,6 +114,7 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   @override
   Widget build(BuildContext context) {
+    // ignore: unused_local_variable
     final colorScheme = Theme.of(context).colorScheme;
 
     return Scaffold(
@@ -136,8 +145,6 @@ class _NavigationScreenState extends State<NavigationScreen>
     );
   }
 
-
-
   Widget _buildAppDrawer() {
     final colorScheme = Theme.of(context).colorScheme;
 
@@ -167,8 +174,7 @@ class _NavigationScreenState extends State<NavigationScreen>
                         .asMap()
                         .entries
                         .map((entry) =>
-                            _buildDrawerItem(entry.value, entry.key, colorScheme))
-                        ,
+                            _buildDrawerItem(entry.value, entry.key, colorScheme)),
                     const Divider(height: 32, thickness: 1),
                     _buildSignOutTile(colorScheme),
                   ],

@@ -5,9 +5,10 @@ import 'package:geocoding/geocoding.dart';
 import 'package:intl/intl.dart';
 import 'dart:async';
 
-
 class MapMonitoring extends StatefulWidget {
-  const MapMonitoring({super.key});
+  final DateTimeRange? dateRange;
+
+  const MapMonitoring({super.key, this.dateRange});
 
   @override
   State<MapMonitoring> createState() => _MapMonitoringState();
@@ -17,7 +18,7 @@ class _MapMonitoringState extends State<MapMonitoring> {
   // Constants
   static const LatLng _initialPosition = LatLng(14.5995, 120.9842);
   static const double _initialZoom = 13.0;
-  static const double _mapHeight = 671.5;
+  static const double _mapHeight = 660.5;
 
   // State
   final Set<Marker> _markers = {};
@@ -43,6 +44,18 @@ class _MapMonitoringState extends State<MapMonitoring> {
     _listenToIncidents();
   }
 
+  @override
+  void didUpdateWidget(MapMonitoring oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    
+    // Check if the dateRange has changed
+    if (widget.dateRange != oldWidget.dateRange) {
+      // Cancel the current subscription and restart listening with the new date range
+      _incidentsSub?.cancel();
+      _listenToIncidents();
+    }
+  }
+
   Future<void> _preloadIcons() async {
     for (final type in ['fire', 'flood', 'accident', 'typhoon', 'other']) {
       _iconCache[type] = await _getDisasterIcon(type);
@@ -55,22 +68,36 @@ class _MapMonitoringState extends State<MapMonitoring> {
       _hasError = false;
     });
 
+    final now = DateTime.now();
+    DateTime start, end;
+
+    if (widget.dateRange != null) {
+      start = DateTime(widget.dateRange!.start.year, widget.dateRange!.start.month,
+          widget.dateRange!.start.day, 0, 0, 0);
+      end = DateTime(widget.dateRange!.end.year, widget.dateRange!.end.month,
+          widget.dateRange!.end.day, 23, 59, 59, 999);
+    } else {
+      start = DateTime(now.year, now.month, now.day, 0, 0, 0);
+      end = now;
+    }
+
     _incidentsSub = FirebaseFirestore.instance
         .collection('incidents')
-        .where('status', isNotEqualTo: 'resolved')
+        .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+        .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(end))
         .snapshots()
         .listen(
-      (snapshot) => _processIncidents(snapshot.docs),
-      onError: (error) {
-        if (mounted) {
-          setState(() {
-            _hasError = true;
-            _errorMessage = 'Error loading incidents: $error';
-            _isLoading = false;
-          });
-        }
-      },
-    );
+          (snapshot) => _processIncidents(snapshot.docs),
+          onError: (error) {
+            if (mounted) {
+              setState(() {
+                _hasError = true;
+                _errorMessage = 'Error loading incidents: $error';
+                _isLoading = false;
+              });
+            }
+          },
+        );
   }
 
   Future<void> _processIncidents(List<QueryDocumentSnapshot> docs) async {
@@ -83,6 +110,13 @@ class _MapMonitoringState extends State<MapMonitoring> {
       processed.add(doc.id);
 
       final data = doc.data() as Map<String, dynamic>;
+      
+      // Filter out resolved and declined incidents
+      final status = (data['status'] ?? '').toString().toLowerCase();
+      if (status == 'resolved' || status == 'declined') {
+        continue;
+      }
+
       final pos = await _getIncidentPosition(data);
       if (pos != null) {
         final marker = await _createMarker(doc.id, data, pos);
@@ -198,53 +232,53 @@ class _MapMonitoringState extends State<MapMonitoring> {
     }
   }
 
-  Widget _buildStatusChip(String status) {
-    Color color;
-    IconData icon;
-    switch (status.toLowerCase()) {
-      case 'resolved':
-        color = Colors.green;
-        icon = Icons.check_circle;
-        break;
-      case 'in progress':
-        color = Colors.blue;
-        icon = Icons.build_circle;
-        break;
-      case 'pending':
-        color = Colors.amber;
-        icon = Icons.access_time;
-        break;
-      case 'under review':
-        color = Colors.purple;
-        icon = Icons.visibility;
-        break;
-      case 'declined':
-        color = Colors.red;
-        icon = Icons.cancel;
-        break;
-      default:
-        color = Colors.grey;
-        icon = Icons.help;
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.15),
-        border: Border.all(color: color),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 14, color: color),
-          const SizedBox(width: 4),
-          Text(status.toUpperCase(),
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color)),
-        ],
-      ),
-    );
+Widget _buildStatusChip(String status) {
+  Color color;
+  IconData icon;
+  switch (status.toLowerCase()) {
+    case 'resolved':
+      color = Colors.green;
+      icon = Icons.check_circle;
+      break;
+    case 'in progress':
+      color = Colors.blue;
+      icon = Icons.build_circle;
+      break;
+    case 'pending':
+      color = Colors.amber;
+      icon = Icons.access_time;
+      break;
+    case 'under review':
+      color = Colors.purple;
+      icon = Icons.visibility;
+      break;
+    case 'declined':
+      color = Colors.red;
+      icon = Icons.cancel;
+      break;
+    default:
+      color = Colors.grey;
+      icon = Icons.help;
   }
+
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+    decoration: BoxDecoration(
+      color: color.withOpacity(0.15),
+      border: Border.all(color: color),
+      borderRadius: BorderRadius.circular(12),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 14, color: color),
+        const SizedBox(width: 4),
+        Text(status.toUpperCase(),
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color)),
+      ],
+    ),
+  );
+}
 
   String _formatTimestamp(dynamic ts) {
     if (ts is Timestamp) {
@@ -357,7 +391,7 @@ class _MapMonitoringState extends State<MapMonitoring> {
             padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
             child: Row(
               children: [
-                const Icon(Icons.map_rounded, size: 24, color: Colors.blue),
+                const Icon(Icons.map_rounded, size: 24, color: Colors.black),
                 const SizedBox(width: 12),
                 const Text('MAP MONITORING',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
@@ -367,7 +401,7 @@ class _MapMonitoringState extends State<MapMonitoring> {
                 const SizedBox(width: 8),
                 IconButton(
                   tooltip: "Refresh Map",
-                  icon: const Icon(Icons.refresh, color: Colors.blue),
+                  icon: const Icon(Icons.refresh, color: Colors.black),
                   onPressed: () {
                     setState(() {
                       _selectedIncident = null;

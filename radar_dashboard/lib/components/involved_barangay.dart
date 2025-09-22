@@ -4,7 +4,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:radar_dashboard/components/section_header.dart';
 
 class InvolvedBarangays extends StatelessWidget {
-  const InvolvedBarangays({super.key});
+  final DateTimeRange? dateRange;
+
+  const InvolvedBarangays({super.key, this.dateRange});
 
   @override
   Widget build(BuildContext context) {
@@ -12,16 +14,18 @@ class InvolvedBarangays extends StatelessWidget {
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       color: Colors.white,
-      child: const Padding(
-        padding: EdgeInsets.all(20),
-        child: _BarangayChartContent(),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: _BarangayChartContent(dateRange: dateRange),
       ),
     );
   }
 }
 
 class _BarangayChartContent extends StatelessWidget {
-  const _BarangayChartContent();
+  final DateTimeRange? dateRange;
+
+  const _BarangayChartContent({this.dateRange});
 
   @override
   Widget build(BuildContext context) {
@@ -33,17 +37,56 @@ class _BarangayChartContent extends StatelessWidget {
           title: 'INVOLVED LOCATION', subtitle: '',
         ),
         const SizedBox(height: 20),
-        _BarangayDataLoader(),
+        _BarangayDataLoader(dateRange: dateRange),
       ],
     );
   }
 }
 
 class _BarangayDataLoader extends StatelessWidget {
+  final DateTimeRange? dateRange;
+
+  const _BarangayDataLoader({this.dateRange});
+
+  Query<Map<String, dynamic>> _buildQuery() {
+    Query<Map<String, dynamic>> q =
+        FirebaseFirestore.instance.collection('incidents');
+
+    if (dateRange != null) {
+      // Use the user-selected range
+      final start = DateTime(
+        dateRange!.start.year,
+        dateRange!.start.month,
+        dateRange!.start.day,
+        0, 0, 0,
+      );
+      final end = DateTime(
+        dateRange!.end.year,
+        dateRange!.end.month,
+        dateRange!.end.day,
+        23, 59, 59, 999,
+      );
+
+      q = q
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(end));
+    } else {
+      // Default: incidents from today (midnight → now)
+      final now = DateTime.now();
+      final startOfToday = DateTime(now.year, now.month, now.day, 0, 0, 0);
+
+      q = q
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfToday))
+          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(now));
+    }
+
+    return q.orderBy('timestamp', descending: true);
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance.collection('incidents').snapshots(),
+      stream: _buildQuery().snapshots(),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return const _ErrorDisplay(message: 'Error loading data');
@@ -54,7 +97,11 @@ class _BarangayDataLoader extends StatelessWidget {
         }
 
         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          return const _ErrorDisplay(message: 'No incident data available');
+          return _ErrorDisplay(
+            message: dateRange == null 
+              ? 'No incident data available' 
+              : 'No incidents in selected date range'
+          );
         }
 
         final dataProcessor = BarangayDataProcessor(snapshot.data!.docs);
@@ -94,50 +141,50 @@ class BarangayDataProcessor {
     );
   }
 
-String _determineBarangay(String address) {
-  try {
-    // Common patterns that indicate a barangay reference
-    final patterns = [
-      'Barangay', 'Brgy.', 'Brgy', 'Bgy.', 'Bgy', 
-      'Village', 'Subdivision', 'Subd.', 'Subd'
-    ];
-    
-    // Convert to lowercase for case-insensitive matching
-    final lowerAddress = address.toLowerCase();
-    
-    // Try to find barangay patterns
-    for (final pattern in patterns) {
-      final patternLower = pattern.toLowerCase();
-      if (lowerAddress.contains(patternLower)) {
-        final startIndex = lowerAddress.indexOf(patternLower) + patternLower.length;
-        var barangayPart = address.substring(startIndex).trim();
-        
-        // Clean up the extracted part
-        barangayPart = barangayPart.split(RegExp(r'[,\-]')).first.trim();
-        
-        // Remove any numbers or special characters that might follow
-        barangayPart = barangayPart.replaceAll(RegExp(r'[0-9#]'), '').trim();
-        
-        if (barangayPart.isNotEmpty) {
-          return barangayPart;
+  String _determineBarangay(String address) {
+    try {
+      // Common patterns that indicate a barangay reference
+      final patterns = [
+        'Barangay', 'Brgy.', 'Brgy', 'Bgy.', 'Bgy', 
+        'Village', 'Subdivision', 'Subd.', 'Subd'
+      ];
+      
+      // Convert to lowercase for case-insensitive matching
+      final lowerAddress = address.toLowerCase();
+      
+      // Try to find barangay patterns
+      for (final pattern in patterns) {
+        final patternLower = pattern.toLowerCase();
+        if (lowerAddress.contains(patternLower)) {
+          final startIndex = lowerAddress.indexOf(patternLower) + patternLower.length;
+          var barangayPart = address.substring(startIndex).trim();
+          
+          // Clean up the extracted part
+          barangayPart = barangayPart.split(RegExp(r'[,\-]')).first.trim();
+          
+          // Remove any numbers or special characters that might follow
+          barangayPart = barangayPart.replaceAll(RegExp(r'[0-9#]'), '').trim();
+          
+          if (barangayPart.isNotEmpty) {
+            return barangayPart;
+          }
         }
       }
-    }
-    
-    // Fallback: If no pattern found, try to extract the first meaningful word
-    final parts = address.split(RegExp(r'[,\-]'));
-    for (final part in parts) {
-      final trimmed = part.trim();
-      if (trimmed.isNotEmpty && !trimmed.contains(RegExp(r'[0-9]'))) {
-        return trimmed;
+      
+      // Fallback: If no pattern found, try to extract the first meaningful word
+      final parts = address.split(RegExp(r'[,\-]'));
+      for (final part in parts) {
+        final trimmed = part.trim();
+        if (trimmed.isNotEmpty && !trimmed.contains(RegExp(r'[0-9]'))) {
+          return trimmed;
+        }
       }
+      
+      return 'Unknown';
+    } catch (e) {
+      return 'Unknown';
     }
-    
-    return 'Unknown';
-  } catch (e) {
-    return 'Unknown';
   }
-}
 }
 
 class BarangayChartData {

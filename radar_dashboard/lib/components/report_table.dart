@@ -1,18 +1,24 @@
-
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:radar_dashboard/components/section_header.dart';
 
-class IncidentReportScreen extends StatefulWidget {
-  const IncidentReportScreen({super.key});
+class ReportTableScreen extends StatefulWidget {
+  final DateTimeRange? dateRange;
+  final ValueChanged<DateTimeRange?> onDateRangeChanged;
+
+  const ReportTableScreen({
+    super.key,
+    required this.dateRange,
+    required this.onDateRangeChanged,
+  });
 
   @override
-  State<IncidentReportScreen> createState() => _IncidentReportScreenState();
+  State<ReportTableScreen> createState() => _ReportTableScreenState();
 }
 
-class _IncidentReportScreenState extends State<IncidentReportScreen> {
+class _ReportTableScreenState extends State<ReportTableScreen> {
   final ScrollController _verticalScrollController = ScrollController();
   final ScrollController _horizontalScrollController = ScrollController();
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -21,7 +27,6 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
   String _searchQuery = '';
   String _selectedType = 'All';
   String _userRole = '';
-  DateTimeRange? _dateRange;
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _lastFilteredDocs = [];
 
   final List<String> _incidentTypes = const [
@@ -74,71 +79,89 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
     Query<Map<String, dynamic>> q =
         FirebaseFirestore.instance.collection('incidents');
 
-    if (_dateRange != null) {
+    if (widget.dateRange != null) {
+      // Use the user-selected range
       final start = DateTime(
-        _dateRange!.start.year,
-        _dateRange!.start.month,
-        _dateRange!.start.day,
-        0,
-        0,
-        0,
+        widget.dateRange!.start.year,
+        widget.dateRange!.start.month,
+        widget.dateRange!.start.day,
+        0, 0, 0,
       );
       final end = DateTime(
-        _dateRange!.end.year,
-        _dateRange!.end.month,
-        _dateRange!.end.day,
-        23,
-        59,
-        59,
-        999,
+        widget.dateRange!.end.year,
+        widget.dateRange!.end.month,
+        widget.dateRange!.end.day,
+        23, 59, 59, 999,
       );
+
       q = q
           .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
-          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(end))
-          .orderBy('timestamp', descending: true);
+          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(end));
     } else {
-      q = q.orderBy('timestamp', descending: true);
+      // Default: incidents from today (midnight → now)
+      final now = DateTime.now();
+      final startOfToday = DateTime(now.year, now.month, now.day, 0, 0, 0);
+
+      q = q
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfToday))
+          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(now));
     }
 
-    return q;
+    // Always order by most recent first
+    return q.orderBy('timestamp', descending: true);
   }
 
-  Future<void> _pickDateRange() async {
-    final now = DateTime.now();
-    final initial = _dateRange ??
-        DateTimeRange(
-          start: DateTime(now.year, now.month - 1, now.day),
-          end: now,
-        );
+Future<void> _pickDateRange() async {
+  final now = DateTime.now();
+  final initial = widget.dateRange ??
+      DateTimeRange(
+        start: now.subtract(const Duration(days: 1)),
+        end: now,
+      );
 
-    final picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(2020, 1, 1),
-      lastDate: DateTime(now.year + 5),
-      initialDateRange: initial,
-      helpText: 'Select Incident Date Range',
-      saveText: 'Apply',
-    );
+  final picked = await showDateRangePicker(
+    context: context,
+    firstDate: DateTime(2020, 1, 1),
+    lastDate: now, // Don't allow future dates
+    initialDateRange: initial,
+    helpText: 'Select Incident Date Range',
+    saveText: 'Apply',
+  );
 
-    if (picked != null) {
-      setState(() {
-        _dateRange = picked;
-      });
+  if (picked != null) {
+    // Allow single day selection by checking if start and end are the same day
+    if (picked.start.year == picked.end.year &&
+        picked.start.month == picked.end.month &&
+        picked.start.day == picked.end.day) {
+      // Single day selected - use the same day for both start and end
+      widget.onDateRangeChanged(picked);
+    } else {
+      // Multi-day range selected
+      widget.onDateRangeChanged(picked);
     }
   }
+}
 
   void _clearDateRange() {
-    setState(() => _dateRange = null);
+    widget.onDateRangeChanged(null);
   }
 
   @override
   Widget build(BuildContext context) {
-    final dateLabel = _dateRange == null 
-        ? 'All Dates' 
-        : '${DateFormat('MMM d, yyyy').format(_dateRange!.start)} - ${DateFormat('MMM d, yyyy').format(_dateRange!.end)}';
+    final now = DateTime.now();
+    final startOfDay = DateTime(now.year, now.month, now.day, 0, 0, 0);
+    final dailyStart = now.subtract(const Duration(hours: 24));
+    
+    final dateRange = widget.dateRange ?? DateTimeRange(start: dailyStart, end: now);
+    
+  final dateLabel = widget.dateRange == null 
+      ? 'Today' 
+      : _isSameDay(widget.dateRange!.start, widget.dateRange!.end)
+          ? DateFormat('MMM d, yyyy').format(widget.dateRange!.start) // Single day
+          : '${DateFormat('MMM d, yyyy').format(widget.dateRange!.start)} - ${DateFormat('MMM d, yyyy').format(widget.dateRange!.end)}'; // Date range
 
     return Card(
-      color: Colors.white,
+      color: Theme.of(context).cardColor,
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
@@ -151,7 +174,8 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                 const Expanded(
                   child: SectionHeader(
                     icon: Icons.warning_amber_outlined,
-                    title: 'EMERGENCIES', subtitle: '',
+                    title: 'EMERGENCIES',
+                    subtitle: '',
                   ),
                 ),
               ],
@@ -165,11 +189,13 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                   flex: 3,
                   child: TextField(
                     controller: _searchController,
+                    style: TextStyle(color: Theme.of(context).textTheme.bodyLarge?.color),
                     decoration: InputDecoration(
                       hintText: 'Search by location, type, or description...',
-                      prefixIcon: const Icon(Icons.search),
+                      hintStyle: TextStyle(color: Theme.of(context).hintColor),
+                      prefixIcon: Icon(Icons.search, color: Theme.of(context).hintColor),
                       filled: true,
-                      fillColor: Colors.grey[50],
+                      fillColor: Theme.of(context).inputDecorationTheme.fillColor ?? Colors.grey[50],
                       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
@@ -185,14 +211,16 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     decoration: BoxDecoration(
-                      color: Colors.grey[50],
+                      color: Theme.of(context).inputDecorationTheme.fillColor ?? Colors.grey[50],
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: DropdownButton<String>(
                       isExpanded: true,
                       underline: const SizedBox(),
                       value: _selectedType,
-                      icon: const Icon(Icons.arrow_drop_down),
+                      icon: Icon(Icons.arrow_drop_down, color: Theme.of(context).iconTheme.color),
+                      dropdownColor: Theme.of(context).dialogBackgroundColor,
+                      style: TextStyle(color: Theme.of(context).textTheme.bodyLarge?.color),
                       onChanged: (String? newValue) {
                         setState(() {
                           _selectedType = newValue!;
@@ -216,25 +244,27 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                       Expanded(
                         child: OutlinedButton.icon(
                           onPressed: _pickDateRange,
-                          icon: const Icon(Icons.calendar_today, size: 18),
+                          icon: Icon(Icons.calendar_today, size: 18, color: Theme.of(context).iconTheme.color),
                           label: Text(
-                            dateLabel,
+                            'Filter: $dateLabel',
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 14),
+                            style: TextStyle(fontSize: 14, color: Theme.of(context).textTheme.bodyLarge?.color),
                           ),
                           style: OutlinedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
+                            side: BorderSide(color: Theme.of(context).dividerColor),
+                            backgroundColor: Theme.of(context).cardColor,
                           ),
                         ),
                       ),
-                      if (_dateRange != null)
+                      if (widget.dateRange != null)
                         IconButton(
                           onPressed: _clearDateRange,
-                          icon: const Icon(Icons.clear, size: 18),
-                          tooltip: 'Clear date range',
+                          icon: Icon(Icons.clear, size: 18, color: Theme.of(context).iconTheme.color),
+                          tooltip: 'Clear date filter',
                         ),
                     ],
                   ),
@@ -285,7 +315,6 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                   }
                 }
 
-
                 final filtered = allDocs.where((doc) {
                   final data = doc.data();
                   final location = (data['address'] ?? '').toString().toLowerCase();
@@ -310,12 +339,14 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                 _lastFilteredDocs = filtered;
 
                 if (filtered.isEmpty) {
-                  return const SizedBox(
+                  return SizedBox(
                     height: 200,
                     child: Center(
                       child: Text(
-                        'No matching incidents found',
-                        style: TextStyle(color: Colors.grey),
+                        widget.dateRange == null 
+                          ? 'No incidents in the last 24 hours'
+                          : 'No matching incidents found',
+                        style: TextStyle(color: Theme.of(context).hintColor),
                       ),
                     ),
                   );
@@ -385,26 +416,61 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
       height: 300,
       child: Scrollbar(
         controller: _verticalScrollController,
+        thumbVisibility: true,
         child: SingleChildScrollView(
           controller: _verticalScrollController,
           child: Scrollbar(
             controller: _horizontalScrollController,
+            thumbVisibility: true,
             child: SingleChildScrollView(
               controller: _horizontalScrollController,
               scrollDirection: Axis.horizontal,
               child: DataTable(
-                columnSpacing: 24,
+                columnSpacing: 25,
                 horizontalMargin: 16,
                 headingRowHeight: 48,
                 dataRowHeight: 60,
-                columns: const [
-                  DataColumn(label: Text('ID', style: TextStyle(fontWeight: FontWeight.bold))),
-                  DataColumn(label: Text('LOCATION', style: TextStyle(fontWeight: FontWeight.bold))),
-                  DataColumn(label: Text('TYPE', style: TextStyle(fontWeight: FontWeight.bold))),
-                  DataColumn(label: Text('DATE', style: TextStyle(fontWeight: FontWeight.bold))),
-                  DataColumn(label: Text('TIME', style: TextStyle(fontWeight: FontWeight.bold))),
-                  DataColumn(label: Text('STATUS', style: TextStyle(fontWeight: FontWeight.bold))),
-                  DataColumn(label: Text('ACTIONS', style: TextStyle(fontWeight: FontWeight.bold))),
+                headingRowColor: MaterialStateProperty.resolveWith<Color?>(
+                  (Set<MaterialState> states) => Theme.of(context).dataTableTheme.headingRowColor?.resolve(states) ?? Colors.grey[100],
+                ),
+                dataRowColor: MaterialStateProperty.resolveWith<Color?>(
+                  (Set<MaterialState> states) => Theme.of(context).dataTableTheme.dataRowColor?.resolve(states) ?? Colors.white,
+                ),
+                columns: [
+                  DataColumn(
+                    label: Text('ID', style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).textTheme.bodyLarge?.color)),
+                    numeric: false,
+                  ),
+                  DataColumn(
+                    label: Text('LOCATION', style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).textTheme.bodyLarge?.color)),
+                    numeric: false,
+                  ),
+                  DataColumn(
+                    label: Text('TYPE', style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).textTheme.bodyLarge?.color)),
+                    numeric: false,
+                  ),
+                  DataColumn(
+                    label: Text('DATE', style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).textTheme.bodyLarge?.color)),
+                    numeric: false,
+                  ),
+                  DataColumn(
+                    label: Text('TIME', style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).textTheme.bodyLarge?.color)),
+                    numeric: false,
+                  ),
+                  DataColumn(
+                    label: Text('STATUS', style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).textTheme.bodyLarge?.color)),
+                    numeric: false,
+                  ),
+                  DataColumn(
+                    label: SizedBox(
+                      width: 80,
+                      child: Text('PROGRESS', 
+                        style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).textTheme.bodyLarge?.color),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    numeric: false,
+                  ),
                 ],
                 rows: filtered.map((doc) => _buildDataRow(doc)).toList(),
               ),
@@ -460,7 +526,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
             children: [
               Text(
                 doc.id.substring(0, 6),
-                style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 12),
+                style: TextStyle(fontFamily: 'RobotoMono', fontSize: 12, color: Theme.of(context).textTheme.bodyLarge?.color),
               ),
               if (isSuspicious)
                 const Padding(
@@ -477,12 +543,19 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
               location,
               overflow: TextOverflow.ellipsis,
               maxLines: 2,
+              style: TextStyle(color: Theme.of(context).textTheme.bodyLarge?.color),
             ),
           ),
         ),
-        DataCell(Text(_capitalize(rawType))),
-        DataCell(Text(date)),
-        DataCell(Text(time)),
+        DataCell(
+          Text(_capitalize(rawType), style: TextStyle(color: Theme.of(context).textTheme.bodyLarge?.color)),
+        ),
+        DataCell(
+          Text(date, style: TextStyle(color: Theme.of(context).textTheme.bodyLarge?.color)),
+        ),
+        DataCell(
+          Text(time, style: TextStyle(color: Theme.of(context).textTheme.bodyLarge?.color)),
+        ),
         DataCell(
           _userRole == 'admin'
               ? _StatusDropdown(
@@ -509,32 +582,99 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                 ),
         ),
         DataCell(
-          IconButton(
-            icon: const Icon(Icons.visibility, size: 18),
-            onPressed: () {
-              // Add view details functionality
-              _showIncidentDetails(doc);
-            },
+          SizedBox(
+            width: 80,
+            child: _buildProgressIndicator(status),
           ),
         ),
       ],
     );
   }
 
-  void _showIncidentDetails(DocumentSnapshot<Map<String, dynamic>> doc) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Incident Details'),
-        content: SingleChildScrollView(
-          child: Text('Details for incident: ${doc.id}'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
+  Widget _buildProgressIndicator(String status) {
+    double progressValue;
+    IconData progressIcon;
+    Color progressColor;
+
+    switch (status) {
+      case 'resolved':
+        progressValue = 1.0;
+        progressIcon = Icons.check_circle;
+        progressColor = Colors.green;
+        break;
+      case 'in progress':
+        progressValue = 0.6;
+        progressIcon = Icons.autorenew;
+        progressColor = const Color(0xFF2196F3);
+        break;
+      case 'under review':
+        progressValue = 0.3;
+        progressIcon = Icons.visibility;
+        progressColor = const Color.fromRGBO(156, 39, 176, 1);
+        break;
+      case 'declined':
+        progressValue = 0.0;
+        progressIcon = Icons.cancel;
+        progressColor = const Color.fromARGB(255, 176, 39, 39);
+        break;
+      case 'pending':
+      default:
+        progressValue = 0.1;
+        progressIcon = Icons.access_time;
+        progressColor = Colors.amber;
+    }
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: Tooltip(
+        message: '${(progressValue * 100).toInt()}% complete',
+        child: Container(
+          width: 80,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              // Progress bar (visible on hover)
+              MouseRegion(
+                child: AnimatedOpacity(
+                  opacity: 0,
+                  duration: const Duration(milliseconds: 200),
+                  child: SizedBox(
+                    width: 80,
+                    height: 6,
+                    child: LinearProgressIndicator(
+                      value: progressValue,
+                      backgroundColor: progressColor.withOpacity(0.2),
+                      valueColor: AlwaysStoppedAnimation<Color>(progressColor),
+                    ),
+                  ),
+                ),
+              ),
+              // Icon (always visible)
+              Icon(
+                progressIcon,
+                color: progressColor,
+                size: 20,
+              ),
+              // Progress bar on hover
+              MouseRegion(
+                child: AnimatedOpacity(
+                  opacity: 0,
+                  duration: const Duration(milliseconds: 200),
+                  child: SizedBox(
+                    width: 80,
+                    height: 6,
+                    child: LinearProgressIndicator(
+                      value: progressValue,
+                      backgroundColor: progressColor.withOpacity(0.2),
+                      valueColor: AlwaysStoppedAnimation<Color>(progressColor),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -638,6 +778,8 @@ class _StatusDropdownState extends State<_StatusDropdown> {
               child: DropdownButton<String>(
                 value: _selectedStatus,
                 icon: const Icon(Icons.arrow_drop_down, size: 18),
+                dropdownColor: Theme.of(context).dialogBackgroundColor,
+                style: TextStyle(color: Theme.of(context).textTheme.bodyLarge?.color),
                 onChanged: (String? newValue) {
                   if (newValue != null && newValue != _selectedStatus) {
                     _updateStatus(newValue);
