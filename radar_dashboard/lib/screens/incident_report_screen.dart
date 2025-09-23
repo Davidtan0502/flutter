@@ -36,6 +36,7 @@ class _EmergenciesScreenState extends State<EmergenciesScreen> with SingleTicker
   final ScrollController _scrollController = ScrollController();
   bool _isLoading = false;
   bool _hasNewUpdates = false;
+  List<QueryDocumentSnapshot> _currentDocs = [];
 
   Future<void> _deleteIncident(String id, {bool showUndo = true}) async {
   try {
@@ -211,6 +212,21 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
       
       if (_selectedIncidents.isEmpty) {
         _isMultiSelectMode = false;
+      }
+    });
+  }
+
+  void _selectAllIncidents() {
+    setState(() {
+      if (_selectedIncidents.length == _currentDocs.length) {
+        // If all are selected, deselect all
+        _selectedIncidents.clear();
+        _isMultiSelectMode = false;
+      } else {
+        // Select all current filtered documents
+        _selectedIncidents.clear();
+        _selectedIncidents.addAll(_currentDocs.map((doc) => doc.id));
+        _isMultiSelectMode = true;
       }
     });
   }
@@ -467,6 +483,23 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
       ),
       child: Row(
         children: [
+          // Select All checkbox
+          Row(
+            children: [
+              Checkbox(
+                value: _selectedIncidents.length == _currentDocs.length && _currentDocs.isNotEmpty,
+                onChanged: (value) => _selectAllIncidents(),
+              ),
+              Text(
+                'Select All',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue[800],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 8),
           Text(
             '${_selectedIncidents.length} selected',
             style: const TextStyle(
@@ -697,6 +730,7 @@ Widget _buildEmergencyList() {
       }
 
       final filteredDocs = _filterEmergencies(snapshot.data!.docs);
+      _currentDocs = filteredDocs; // Store current filtered docs for select all
 
       if (filteredDocs.isEmpty) {
         return _buildEmptyState();
