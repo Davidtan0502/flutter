@@ -49,7 +49,7 @@ class _NavigationScreenState extends State<NavigationScreen>
       NavigationItem(
         title: 'Incident Reports',
         icon: Icons.emergency_rounded,
-        screenBuilder: (onMenuPressed) => EmergenciesScreen(
+        screenBuilder: (onMenuPressed) => IncidentReportScreen(
           onMenuPressed: onMenuPressed,
           userRole: widget.userRole,
         ),

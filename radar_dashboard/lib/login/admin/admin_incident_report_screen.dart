@@ -1,5 +1,4 @@
-import 'dart:typed_data'; // for Uint8List
-
+import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
@@ -8,23 +7,30 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:intl/intl.dart';
 import 'package:photo_view/photo_view.dart';
+import 'package:radar_dashboard/login/admin/admin_panel_screen.dart';
 import 'package:shimmer/shimmer.dart';
 
-class IncidentReportScreen extends StatefulWidget {
-  final VoidCallback onMenuPressed;
+class AdminIncidentReportScreen extends StatefulWidget {
+  final String? userId;
+  final String? userEmail;
+  final String? userName;
+  final String? userAddress;
   final String userRole;
 
-  const IncidentReportScreen({
+  const AdminIncidentReportScreen({
     super.key,
-    required this.onMenuPressed,
-    required this.userRole,
+    this.userId,
+    this.userEmail,
+    this.userName,
+    this.userAddress,
+    this.userRole = 'admin',
   });
 
   @override
-  State<IncidentReportScreen> createState() => _IncidentReportScreenState();
+  State<AdminIncidentReportScreen> createState() => _AdminIncidentReportScreenState();
 }
 
-class _IncidentReportScreenState extends State<IncidentReportScreen> with SingleTickerProviderStateMixin {
+class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> with SingleTickerProviderStateMixin {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   String _selectedFilter = 'recent';
@@ -37,78 +43,6 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> with Single
   bool _isLoading = false;
   bool _hasNewUpdates = false;
   List<QueryDocumentSnapshot> _currentDocs = [];
-
-  Future<void> _deleteIncident(String id, {bool showUndo = true}) async {
-  try {
-    // Get the document data before deleting for potential undo
-    final docSnapshot = await FirebaseFirestore.instance
-        .collection('incidents')
-        .doc(id)
-        .get();
-    
-    final incidentData = docSnapshot.data();
-    
-    // Delete the document
-    await FirebaseFirestore.instance
-        .collection('incidents')
-        .doc(id)
-        .delete();
-    
-    // Show undo snackbar if requested
-    if (showUndo && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Incident deleted'),
-          backgroundColor: Colors.red,
-          action: SnackBarAction(
-            label: 'UNDO',
-            textColor: Colors.white,
-            onPressed: () => _undoDelete(id, incidentData),
-          ),
-          duration: const Duration(seconds: 5),
-        ),
-      );
-    }
-  } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to delete: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-}
-
-Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
-  if (data == null) return;
-  
-  try {
-    await FirebaseFirestore.instance
-        .collection('incidents')
-        .doc(id)
-        .set(data);
-    
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Incident restored'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    }
-  } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to restore: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-}
 
   @override
   void initState() {
@@ -124,7 +58,6 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
       CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
     );
     
-    // Start animation after build
     SchedulerBinding.instance.addPostFrameCallback((_) {
       _animationController.forward();
     });
@@ -145,90 +78,191 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
     });
   }
 
-  Color _getStatusColor(String status) {
-    switch (status.toLowerCase()) {
-      case 'resolved':
-        return const Color(0xFF4CAF50);
-      case 'in progress':
-        return const Color(0xFF2196F3);
-      case 'pending':
-        return const Color(0xFFFF9800); {}
-      case 'under review':
-        return const Color.fromRGBO(156, 39, 176, 1);
-      case 'declined':
-        return const Color(0xFFF44336);
-      default:
-        return const Color(0xFF9E9E9E);
-    }
-  }
-
-  IconData _getStatusIcon(String status) {
-    switch (status.toLowerCase()) {
-      case 'resolved':
-        return Icons.check_circle;
-      case 'in progress':
-        return Icons.autorenew;
-      case 'pending':
-        return Icons.access_time;
-      case 'under review':
-      return Icons.visibility;
-      case 'declined':
-        return Icons.cancel;
-      default:
-        return Icons.help_outline;
-    }
-  }
-
-  Future<void> _refreshData() async {
-    setState(() {
-      _isLoading = true;
-      _hasNewUpdates = false;
-    });
-    
-    // Simulate network request
-    await Future.delayed(const Duration(seconds: 1));
-    
-    setState(() {
-      _isLoading = false;
-    });
-  }
-
-  void _toggleMultiSelectMode() {
-    setState(() {
-      _isMultiSelectMode = !_isMultiSelectMode;
-      if (!_isMultiSelectMode) {
-        _selectedIncidents.clear();
+  Future<void> _deleteIncident(String id, {bool showUndo = true}) async {
+    try {
+      final docSnapshot = await FirebaseFirestore.instance
+          .collection('incidents')
+          .doc(id)
+          .get();
+      
+      final incidentData = docSnapshot.data();
+      
+      await FirebaseFirestore.instance
+          .collection('incidents')
+          .doc(id)
+          .delete();
+      
+      if (showUndo && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Incident deleted'),
+            backgroundColor: Colors.red,
+            action: SnackBarAction(
+              label: 'UNDO',
+              textColor: Colors.white,
+              onPressed: () => _undoDelete(id, incidentData),
+            ),
+            duration: const Duration(seconds: 5),
+          ),
+        );
       }
-    });
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
-  void _selectIncident(String id) {
-    setState(() {
-      if (_selectedIncidents.contains(id)) {
-        _selectedIncidents.remove(id);
-      } else {
-        _selectedIncidents.add(id);
+  Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
+    if (data == null) return;
+    
+    try {
+      await FirebaseFirestore.instance
+          .collection('incidents')
+          .doc(id)
+          .set(data);
+      
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Incident restored'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to restore: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _showBatchDeleteConfirmation() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm Batch Delete'),
+        content: Text('Are you sure you want to delete ${_selectedIncidents.length} incidents? This action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text(
+              'Delete',
+              style: TextStyle(color: Colors.red),
+            ),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return;
+    
+    final incidentsToDelete = <String, Map<String, dynamic>>{};
+    for (final id in _selectedIncidents) {
+      try {
+        final docSnapshot = await FirebaseFirestore.instance
+            .collection('incidents')
+            .doc(id)
+            .get();
+        
+        if (docSnapshot.exists) {
+          incidentsToDelete[id] = docSnapshot.data()!;
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('Error getting document $id: $e');
+        }
+      }
+    }
+    
+    final batch = FirebaseFirestore.instance.batch();
+    for (final id in _selectedIncidents) {
+      final docRef = FirebaseFirestore.instance.collection('incidents').doc(id);
+      batch.delete(docRef);
+    }
+    
+    try {
+      await batch.commit();
+      
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Deleted ${_selectedIncidents.length} incidents'),
+            backgroundColor: Colors.red,
+            action: SnackBarAction(
+              label: 'UNDO',
+              textColor: Colors.white,
+              onPressed: () => _undoBatchDelete(incidentsToDelete),
+            ),
+            duration: const Duration(seconds: 5),
+          ),
+        );
       }
       
-      if (_selectedIncidents.isEmpty) {
+      setState(() {
+        _selectedIncidents.clear();
         _isMultiSelectMode = false;
+      });
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
-    });
+    }
   }
 
-  void _selectAllIncidents() {
-    setState(() {
-      if (_selectedIncidents.length == _currentDocs.length) {
-        // If all are selected, deselect all
-        _selectedIncidents.clear();
-        _isMultiSelectMode = false;
-      } else {
-        // Select all current filtered documents
-        _selectedIncidents.clear();
-        _selectedIncidents.addAll(_currentDocs.map((doc) => doc.id));
-        _isMultiSelectMode = true;
+  Future<void> _undoBatchDelete(Map<String, Map<String, dynamic>> incidents) async {
+    if (incidents.isEmpty) return;
+    
+    final batch = FirebaseFirestore.instance.batch();
+    
+    for (final entry in incidents.entries) {
+      final docRef = FirebaseFirestore.instance
+          .collection('incidents')
+          .doc(entry.key);
+      
+      batch.set(docRef, entry.value);
+    }
+    
+    try {
+      await batch.commit();
+      
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Incidents restored'),
+            backgroundColor: Colors.green,
+          ),
+        );
       }
-    });
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to restore: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _batchUpdateStatus(String status) async {
@@ -306,6 +340,8 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (widget.userId != null) _buildUserInfoHeader(),
+              const SizedBox(height: 16),
               _buildSearchBar(),
               const SizedBox(height: 16),
               _buildFilterSection(),
@@ -326,31 +362,106 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
     );
   }
 
-  AppBar _buildAppBar() {
-    return AppBar(
-      leading: IconButton(
-        icon: const Icon(Icons.menu, color: Colors.white),
-        onPressed: widget.onMenuPressed,
+  Widget _buildUserInfoHeader() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
-      title: const Text('EMERGENCY INCIDENT REPORT'),
+      child: Row(
+        children: [
+          const Icon(Icons.person, size: 40, color: Colors.blue),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.userName ?? 'Unknown User',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  widget.userEmail ?? 'No email',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey,
+                  ),
+                ),
+                if (widget.userAddress != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    widget.userAddress!,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey,
+                    ),
+                  ),
+                ],
+                Text(
+                  'User ID: ${widget.userId}',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Colors.grey,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  AppBar _buildAppBar() {
+  return AppBar(
+    leading: IconButton(
+      icon: const Icon(Icons.arrow_back, color: Colors.white),
+      onPressed: () {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(
+            builder: (_) => const AdminPanelScreen(initialSystem: 1), // 👈 Radar tab
+          ),
+          (route) => false,
+        );
+      },
+    ),
+
+      title: Text(
+        widget.userId != null 
+          ? 'INCIDENTS BY ${widget.userName?.toUpperCase() ?? widget.userEmail?.toUpperCase() ?? "USER"}'
+          : 'EMERGENCY INCIDENT REPORT',
+      ),
       titleTextStyle: const TextStyle(
         color: Colors.white,
-        fontSize: 20,
+        fontSize: 18,
         fontWeight: FontWeight.bold,
       ),
       backgroundColor: const Color(0xFF2C5282),
       elevation: 4,
       centerTitle: true,
       actions: [
-        if (widget.userRole == 'admin')
-          IconButton(
-            icon: Icon(
-              _isMultiSelectMode ? Icons.cancel : Icons.select_all,
-              color: Colors.white,
-            ),
-            onPressed: _toggleMultiSelectMode,
-            tooltip: _isMultiSelectMode ? 'Cancel selection' : 'Select multiple',
+        IconButton(
+          icon: Icon(
+            _isMultiSelectMode ? Icons.cancel : Icons.select_all,
+            color: Colors.white,
           ),
+          onPressed: _toggleMultiSelectMode,
+          tooltip: _isMultiSelectMode ? 'Cancel selection' : 'Select multiple',
+        ),
         if (_hasNewUpdates)
           IconButton(
             icon: const Icon(Icons.new_releases, color: Colors.amber),
@@ -471,310 +582,168 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
     );
   }
 
- Widget _buildBatchActions() {
-  return Material(
-    elevation: 2,
-    borderRadius: BorderRadius.circular(12),
-    child: Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          // Select All checkbox
-          Row(
-            children: [
-              Checkbox(
-                value: _selectedIncidents.length == _currentDocs.length && _currentDocs.isNotEmpty,
-                onChanged: (value) => _selectAllIncidents(),
-              ),
-              Text(
-                'Select All',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.blue[800],
+  Widget _buildBatchActions() {
+    return Material(
+      elevation: 2,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Row(
+              children: [
+                Checkbox(
+                  value: _selectedIncidents.length == _currentDocs.length && _currentDocs.isNotEmpty,
+                  onChanged: (value) => _selectAllIncidents(),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(width: 8),
-          Text(
-            '${_selectedIncidents.length} selected',
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 16,
+                Text(
+                  'Select All',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.blue[800],
+                  ),
+                ),
+              ],
             ),
-          ),
-          const Spacer(),
-          // Delete button
-          IconButton(
-            icon: const Icon(Icons.delete, color: Colors.red),
-            onPressed: () => _showBatchDeleteConfirmation(),
-            tooltip: 'Delete selected',
-          ),
-          // Status update dropdown
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'in progress',
-                child: Row(
-                  children: [
-                    Icon(Icons.autorenew, color: Colors.blue),
-                    SizedBox(width: 8),
-                    Text('Mark as In Progress'),
-                  ],
-                ),
+            const SizedBox(width: 8),
+            Text(
+              '${_selectedIncidents.length} selected',
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
               ),
-              const PopupMenuItem(
-                value: 'resolved',
-                child: Row(
-                  children: [
-                    Icon(Icons.check_circle, color: Colors.green),
-                    SizedBox(width: 8),
-                    Text('Mark as Resolved'),
-                  ],
+            ),
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.delete, color: Colors.red),
+              onPressed: () => _showBatchDeleteConfirmation(),
+              tooltip: 'Delete selected',
+            ),
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert),
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'in progress',
+                  child: Row(
+                    children: [
+                      Icon(Icons.autorenew, color: Colors.blue),
+                      SizedBox(width: 8),
+                      Text('Mark as In Progress'),
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuItem(
-                value: 'under review',
-                child: Row(
-                  children: [
-                    Icon(Icons.visibility, color: Colors.purple),
-                    SizedBox(width: 8),
-                    Text('Mark as Under Review'),
-                  ],
+                const PopupMenuItem(
+                  value: 'resolved',
+                  child: Row(
+                    children: [
+                      Icon(Icons.check_circle, color: Colors.green),
+                      SizedBox(width: 8),
+                      Text('Mark as Resolved'),
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuItem(
-                value: 'declined',
-                child: Row(
-                  children: [
-                    Icon(Icons.cancel, color: Colors.red),
-                    SizedBox(width: 8),
-                    Text('Decline Selected'),
-                  ],
+                const PopupMenuItem(
+                  value: 'under review',
+                  child: Row(
+                    children: [
+                      Icon(Icons.visibility, color: Colors.purple),
+                      SizedBox(width: 8),
+                      Text('Mark as Under Review'),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-            onSelected: _batchUpdateStatus,
-          ),
-        ],
+                const PopupMenuItem(
+                  value: 'declined',
+                  child: Row(
+                    children: [
+                      Icon(Icons.cancel, color: Colors.red),
+                      SizedBox(width: 8),
+                      Text('Decline Selected'),
+                    ],
+                  ),
+                ),
+              ],
+              onSelected: _batchUpdateStatus,
+            ),
+          ],
+        ),
       ),
-    ),
-  );
-}
-void _showBatchDeleteConfirmation() async {
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('Confirm Batch Delete'),
-      content: Text('Are you sure you want to delete ${_selectedIncidents.length} incidents? This action cannot be undone.'),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          onPressed: () => Navigator.pop(context, true),
-          child: const Text(
-            'Delete',
-            style: TextStyle(color: Colors.red),
-          ),
-        ),
-      ],
-    ),
-  );
-  
-  if (confirmed != true) return;
-  
-  // Store data for potential undo
-  final incidentsToDelete = <String, Map<String, dynamic>>{};
-  for (final id in _selectedIncidents) {
-    try {
-      final docSnapshot = await FirebaseFirestore.instance
+    );
+  }
+
+  Widget _buildEmergencyList() {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
           .collection('incidents')
-          .doc(id)
-          .get();
-      
-      if (docSnapshot.exists) {
-        incidentsToDelete[id] = docSnapshot.data()!;
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('Error getting document $id: $e');
-      }
-    }
-  }
-  
-  // Delete all selected incidents
-  final batch = FirebaseFirestore.instance.batch();
-  for (final id in _selectedIncidents) {
-    final docRef = FirebaseFirestore.instance.collection('incidents').doc(id);
-    batch.delete(docRef);
-  }
-  
-  try {
-    await batch.commit();
-    
-    // Show undo snackbar
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Deleted ${_selectedIncidents.length} incidents'),
-          backgroundColor: Colors.red,
-          action: SnackBarAction(
-            label: 'UNDO',
-            textColor: Colors.white,
-            onPressed: () => _undoBatchDelete(incidentsToDelete),
-          ),
-          duration: const Duration(seconds: 5),
-        ),
-      );
-    }
-    
-    setState(() {
-      _selectedIncidents.clear();
-      _isMultiSelectMode = false;
-    });
-  } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to delete: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-}
+          .orderBy('timestamp', descending: true)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _buildErrorState(snapshot.error.toString());
+        }
 
-Future<void> _undoBatchDelete(Map<String, Map<String, dynamic>> incidents) async {
-  if (incidents.isEmpty) return;
-  
-  final batch = FirebaseFirestore.instance.batch();
-  
-  for (final entry in incidents.entries) {
-    final docRef = FirebaseFirestore.instance
-        .collection('incidents')
-        .doc(entry.key);
-    
-    batch.set(docRef, entry.value);
-  }
-  
-  try {
-    await batch.commit();
-    
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Incidents restored'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    }
-  } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to restore: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-}
+        if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
+          return _buildLoadingState();
+        }
 
-Widget _buildErrorState(String error) {
-  return Center(
-    child: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        const Icon(Icons.error_outline, size: 64, color: Colors.red),
-        const SizedBox(height: 16),
-        const Text(
-          'Something went wrong',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          error,
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.grey),
-        ),
-        const SizedBox(height: 16),
-        ElevatedButton(
-          onPressed: _refreshData,
-          child: const Text('Try Again'),
-        ),
-      ],
-    ),
-  );
-}
-
-Widget _buildEmergencyList() {
-  return StreamBuilder<QuerySnapshot>(
-    stream: FirebaseFirestore.instance
-        .collection('incidents')
-        .orderBy('timestamp', descending: true)
-        .snapshots(),
-    builder: (context, snapshot) {
-      if (snapshot.hasError) {
-        return _buildErrorState(snapshot.error.toString());
-      }
-
-      if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
-        return _buildLoadingState();
-      }
-
-      final filteredDocs = _filterEmergencies(snapshot.data!.docs);
-      _currentDocs = filteredDocs; // Store current filtered docs for select all
-
-      if (filteredDocs.isEmpty) {
-        return _buildEmptyState();
-      }
-
-      return RefreshIndicator(
-        onRefresh: _refreshData,
-        child: ListView.separated(
-          controller: _scrollController,
-          padding: const EdgeInsets.only(bottom: 16),
-          itemCount: filteredDocs.length,
-          separatorBuilder: (context, index) => const SizedBox(height: 12),
-          itemBuilder: (context, index) {
-            final doc = filteredDocs[index];
+        List<QueryDocumentSnapshot> allDocs = snapshot.data!.docs;
+        if (widget.userId != null) {
+          allDocs = allDocs.where((doc) {
             final data = doc.data() as Map<String, dynamic>;
-            
-            if (!kIsWeb) {
-              final imageUrls = data['imageUrls'] as List<dynamic>? ?? [];
-              for (final url in imageUrls) {
-                if (url is String) {
-                  DefaultCacheManager().getSingleFile(url);
+            return data['userId'] == widget.userId;
+          }).toList();
+        }
+
+        final filteredDocs = _filterEmergencies(allDocs);
+        _currentDocs = filteredDocs;
+
+        if (filteredDocs.isEmpty) {
+          return _buildEmptyState();
+        }
+
+        return RefreshIndicator(
+          onRefresh: _refreshData,
+          child: ListView.separated(
+            controller: _scrollController,
+            padding: const EdgeInsets.only(bottom: 16),
+            itemCount: filteredDocs.length,
+            separatorBuilder: (context, index) => const SizedBox(height: 12),
+            itemBuilder: (context, index) {
+              final doc = filteredDocs[index];
+              final data = doc.data() as Map<String, dynamic>;
+              
+              if (!kIsWeb) {
+                final imageUrls = data['imageUrls'] as List<dynamic>? ?? [];
+                for (final url in imageUrls) {
+                  if (url is String) {
+                    DefaultCacheManager().getSingleFile(url);
+                  }
                 }
               }
-            }
-            
-            return _EmergencyCard(
-              data: data,
-              docId: doc.id,
-              onTap: () => _showEmergencyDetails(doc),
-              getStatusColor: _getStatusColor,
-              getStatusIcon: _getStatusIcon,
-              userRole: widget.userRole,
-              isSelectable: _isMultiSelectMode,
-              isSelected: _selectedIncidents.contains(doc.id),
-              onSelect: () => _selectIncident(doc.id),
-              onDelete: () => _deleteIncident(doc.id),
-              showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
-            );
-          },
-        ),
-      );
-    },
-  );
-}
+              
+              return _EmergencyCard(
+                data: data,
+                docId: doc.id,
+                onTap: () => _showEmergencyDetails(doc),
+                getStatusColor: _getStatusColor,
+                getStatusIcon: _getStatusIcon,
+                userRole: widget.userRole,
+                isSelectable: _isMultiSelectMode,
+                isSelected: _selectedIncidents.contains(doc.id),
+                onSelect: () => _selectIncident(doc.id),
+                onDelete: () => _deleteIncident(doc.id),
+                showDeleteButton: _selectedFilter == 'all',
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
 
   Widget _buildLoadingState() {
     return ListView.builder(
@@ -830,6 +799,33 @@ Widget _buildEmergencyList() {
     );
   }
 
+  Widget _buildErrorState(String error) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.error_outline, size: 64, color: Colors.red),
+          const SizedBox(height: 16),
+          const Text(
+            'Something went wrong',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            error,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.grey),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: _refreshData,
+            child: const Text('Try Again'),
+          ),
+        ],
+      ),
+    );
+  }
+
   List<QueryDocumentSnapshot> _filterEmergencies(List<QueryDocumentSnapshot> docs) {
     final now = DateTime.now();
     final twentyFourHoursAgo = now.subtract(const Duration(hours: 24));
@@ -840,7 +836,6 @@ Widget _buildEmergencyList() {
       final type = (data['incidentType'] ?? '').toString().toLowerCase();
       final timestamp = data['timestamp'] as Timestamp?;
       
-      // Apply time filter
       if (_selectedFilter == 'recent' && timestamp != null) {
         final reportTime = timestamp.toDate();
         if (reportTime.isBefore(twentyFourHoursAgo)) {
@@ -848,7 +843,6 @@ Widget _buildEmergencyList() {
         }
       }
       
-      // Apply date filter if selected
       if (_selectedDate != null && timestamp != null) {
         final reportDate = timestamp.toDate();
         if (!DateUtils.isSameDay(reportDate, _selectedDate)) {
@@ -856,7 +850,6 @@ Widget _buildEmergencyList() {
         }
       }
       
-      // Apply search filter
       return _searchQuery.isEmpty ||
           location.contains(_searchQuery) ||
           type.contains(_searchQuery);
@@ -877,7 +870,6 @@ Widget _buildEmergencyList() {
     final statusUpdates = data['statusUpdates'] as List<dynamic>? ?? [];
 
     if (kIsWeb) {
-      // Web-optimized modal with larger width
       showDialog(
         context: context,
         builder: (context) => Dialog(
@@ -909,7 +901,6 @@ Widget _buildEmergencyList() {
         ),
       );
     } else {
-      // Mobile modal
       showModalBottomSheet(
         context: context,
         isScrollControlled: true,
@@ -952,20 +943,86 @@ Widget _buildEmergencyList() {
     );
   }
 
-  Color _getIncidentColor(String? incidentType) {
-    switch (incidentType?.toLowerCase()) {
-      case 'fire':
-        return const Color(0xFFF44336);
-      case 'accident':
-        return const Color(0xFFFF9800);
-      case 'flood':
+  Future<void> _refreshData() async {
+    setState(() {
+      _isLoading = true;
+      _hasNewUpdates = false;
+    });
+    
+    await Future.delayed(const Duration(seconds: 1));
+    
+    setState(() {
+      _isLoading = false;
+    });
+  }
+
+  void _toggleMultiSelectMode() {
+    setState(() {
+      _isMultiSelectMode = !_isMultiSelectMode;
+      if (!_isMultiSelectMode) {
+        _selectedIncidents.clear();
+      }
+    });
+  }
+
+  void _selectIncident(String id) {
+    setState(() {
+      if (_selectedIncidents.contains(id)) {
+        _selectedIncidents.remove(id);
+      } else {
+        _selectedIncidents.add(id);
+      }
+      
+      if (_selectedIncidents.isEmpty) {
+        _isMultiSelectMode = false;
+      }
+    });
+  }
+
+  void _selectAllIncidents() {
+    setState(() {
+      if (_selectedIncidents.length == _currentDocs.length) {
+        _selectedIncidents.clear();
+        _isMultiSelectMode = false;
+      } else {
+        _selectedIncidents.clear();
+        _selectedIncidents.addAll(_currentDocs.map((doc) => doc.id));
+        _isMultiSelectMode = true;
+      }
+    });
+  }
+
+  Color _getStatusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'resolved':
+        return const Color(0xFF4CAF50);
+      case 'in progress':
         return const Color(0xFF2196F3);
-      case 'medical':
-        return const Color(0xFFE91E63);
-      case 'crime':
-        return const Color(0xFF9C27B0);
+      case 'pending':
+        return const Color(0xFFFF9800);
+      case 'under review':
+        return const Color.fromRGBO(156, 39, 176, 1);
+      case 'declined':
+        return const Color(0xFFF44336);
       default:
-        return const Color(0xFF607D8B);
+        return const Color(0xFF9E9E9E);
+    }
+  }
+
+  IconData _getStatusIcon(String status) {
+    switch (status.toLowerCase()) {
+      case 'resolved':
+        return Icons.check_circle;
+      case 'in progress':
+        return Icons.autorenew;
+      case 'pending':
+        return Icons.access_time;
+      case 'under review':
+        return Icons.visibility;
+      case 'declined':
+        return Icons.cancel;
+      default:
+        return Icons.help_outline;
     }
   }
 }
@@ -1015,6 +1072,36 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
     _selectedStatus = widget.currentStatus;
     _preloadImages();
   }
+
+Future<String> _getFullName() async {
+  try {
+    final userId = widget.data['userId'];
+    if (userId == null) return "Anonymous";
+
+    final userDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(userId)
+        .get();
+
+    if (!userDoc.exists) return "Anonymous";
+
+    final userData = userDoc.data() as Map<String, dynamic>;
+    final firstName = userData['firstName']?.toString().trim() ?? '';
+    final middleName = userData['middleName']?.toString().trim() ?? '';
+    final lastName = userData['lastName']?.toString().trim() ?? '';
+
+    if (firstName.isEmpty && lastName.isEmpty) return "Anonymous";
+
+    final nameParts = <String>[];
+    if (firstName.isNotEmpty) nameParts.add(firstName);
+    if (middleName.isNotEmpty) nameParts.add(middleName);
+    if (lastName.isNotEmpty) nameParts.add(lastName);
+
+    return nameParts.join(' ');
+  } catch (e) {
+    return "Anonymous";
+  }
+}
 
   Future<void> _preloadImages() async {
     for (final imageUrl in widget.imageUrls) {
@@ -1086,80 +1173,6 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
     );
   }
 
-  Widget _buildImagesSection() {
-    if (widget.imageUrls.isEmpty) return const SizedBox();
-    
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'ATTACHED IMAGES',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-            color: Colors.grey[700],
-          ),
-        ),
-        const SizedBox(height: 12),
-        SizedBox(
-          height: 120,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            itemCount: widget.imageUrls.length,
-            itemBuilder: (context, index) {
-              final imageUrl = widget.imageUrls[index]?.toString() ?? '';
-              final imageData = _imageCache[imageUrl];
-              
-              return Container(
-                margin: const EdgeInsets.only(right: 12),
-                child: Material(
-                  elevation: 2,
-                  borderRadius: BorderRadius.circular(12),
-                  child: GestureDetector(
-                    onTap: () => _showImagePreview(imageUrl),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Container(
-                        width: 120,
-                        height: 120,
-                        color: Colors.grey[200],
-                        child: _buildImageWidget(imageUrl, imageData),
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildImageWidget(String imageUrl, Uint8List? imageData) {
-    if (imageData == null) {
-      return Container(
-        color: Colors.grey[300],
-        child: const Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-    }
-    
-    return Image.memory(
-      imageData,
-      fit: BoxFit.cover,
-      errorBuilder: (context, error, stackTrace) {
-        return Container(
-          color: Colors.grey[300],
-          child: const Center(
-            child: Icon(Icons.broken_image, color: Colors.grey, size: 40),
-          ),
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     if (widget.isWeb) {
@@ -1184,7 +1197,6 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
       ),
       child: Column(
         children: [
-          // Header
           Container(
             padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
@@ -1216,14 +1228,12 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
             ),
           ),
           
-          // Content
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(32),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Left column - Incident details
                   Expanded(
                     flex: 3,
                     child: Column(
@@ -1231,14 +1241,11 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
                       children: [
                         _buildDetailCard(),
                         const SizedBox(height: 32),
-                        
-                        // Details sections
                         _buildDetailSection(
                           icon: Icons.location_on,
                           title: 'Location',
                           content: widget.data['address']?.toString() ?? 'Unknown location',
                         ),
-                        
                         _buildDetailSection(
                           icon: Icons.access_time,
                           title: 'Reported',
@@ -1247,52 +1254,53 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
                                   .format(widget.timestamp!.toDate())
                               : 'Unknown time',
                         ),
-                        
                         _buildDetailSection(
                           icon: Icons.phone,
                           title: 'Contact',
                           content: widget.data['contactNumber']?.toString() ?? 'Not provided',
                         ),
-                        
-                        _buildDetailSection(
-                          icon: Icons.person,
-                          title: 'Reporter',
-                          content: widget.data['name']?.toString() ?? 'Anonymous',
-                        ),
-                        
-                        if (widget.data['description'] != null) ...[
-                          const SizedBox(height: 24),
                           _buildDetailSection(
-                            icon: Icons.description,
-                            title: 'Description',
-                            content: widget.data['description']!.toString(),
-                            isDescription: true,
+                            icon: Icons.person,
+                            title: "Reporter",
+                            content: FutureBuilder<String>(
+                              future: _getFullName(),
+                              builder: (context, snapshot) {
+                                if (snapshot.connectionState == ConnectionState.waiting) {
+                                  return Text("Loading...");
+                                }
+                                if (snapshot.hasError) {
+                                  return Text("Anonymous");
+                                }
+                                return Text(snapshot.data ?? "Anonymous");
+                              },
+                            ),
                           ),
-                        ],
-                        
-                        // Images section
-                        if (widget.imageUrls.isNotEmpty) ...[
-                          const SizedBox(height: 32),
-                          _buildImagesSection(),
-                        ],
+
+                          const SizedBox(height: 24),
+                        _buildDetailSection(
+                          icon: Icons.description,
+                          title: 'Description',
+                          content: widget.data['description']!.toString(),
+                          isDescription: true,
+                        ),
                       ],
                     ),
                   ),
+                  if (widget.imageUrls.isNotEmpty) ...[
+                    const SizedBox(height: 32),
+                    _buildImagesSection(),
+                  ],
                   
                   const SizedBox(width: 32),
                   
-                  // Right column - Status and updates
                   Expanded(
                     flex: 2,
                     child: Column(
                       children: [
-                        // Status timeline
                         if (widget.statusUpdates.isNotEmpty) ...[
                           _buildStatusTimeline(),
                           const SizedBox(height: 32),
                         ],
-                        
-                        // Admin section or user view
                         widget.userRole == 'admin' 
                             ? _buildAdminSection()
                             : _buildUserSection(),
@@ -1320,7 +1328,6 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Drag handle
           Container(
             width: 60,
             height: 6,
@@ -1331,7 +1338,6 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
             ),
           ),
           
-          // Header
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
             child: Row(
@@ -1355,7 +1361,6 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
           
           const Divider(height: 1),
           
-          // Content
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(24),
@@ -1364,20 +1369,15 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
                 children: [
                   _buildDetailCard(),
                   const SizedBox(height: 24),
-                  
-                  // Status timeline
                   if (widget.statusUpdates.isNotEmpty) ...[
                     _buildStatusTimeline(),
                     const SizedBox(height: 24),
                   ],
-                  
-                  // Details sections
                   _buildDetailSection(
                     icon: Icons.location_on,
                     title: 'Location',
                     content: widget.data['address']?.toString() ?? 'Unknown location',
                   ),
-                  
                   _buildDetailSection(
                     icon: Icons.access_time,
                     title: 'Reported',
@@ -1386,19 +1386,16 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
                             .format(widget.timestamp!.toDate())
                         : 'Unknown time',
                   ),
-                  
                   _buildDetailSection(
                     icon: Icons.phone,
                     title: 'Contact',
                     content: widget.data['contactNumber']?.toString() ?? 'Not provided',
                   ),
-                  
                   _buildDetailSection(
                     icon: Icons.person,
                     title: 'Reporter',
-                    content: widget.data['name']?.toString() ?? 'Anonymous',
+                    content: _getFullName(),
                   ),
-                  
                   if (widget.data['description'] != null) ...[
                     const SizedBox(height: 16),
                     _buildDetailSection(
@@ -1408,14 +1405,10 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
                       isDescription: true,
                     ),
                   ],
-                  
-                  // Images section
                   if (widget.imageUrls.isNotEmpty) ...[
                     const SizedBox(height: 24),
                     _buildImagesSection(),
                   ],
-                  
-                  // Admin section or user view
                   const SizedBox(height: 24),
                   widget.userRole == 'admin' 
                       ? _buildAdminSection()
@@ -1598,61 +1591,138 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
     );
   }
 
-  Widget _buildDetailSection({
-    required IconData icon,
-    required String title,
-    required String content,
-    bool isDescription = false,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 20),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.grey[50],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.blue[100],
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, size: 20, color: Colors.blue[800]),
+ Widget _buildDetailSection({
+  required IconData icon,
+  required String title,
+  required dynamic content, // can be String or Widget
+  bool isDescription = false,
+}) {
+  final Widget contentWidget = content is String
+      ? Text(
+          content,
+          style: TextStyle(
+            fontSize: isDescription ? 15 : 16,
+            color: Colors.black87,
           ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title.toUpperCase(),
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.grey[600],
-                    letterSpacing: 1,
+        )
+      : content as Widget;
+
+  return Container(
+    margin: const EdgeInsets.only(bottom: 20),
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: Colors.grey[50],
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: Colors.grey.shade200),
+    ),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.blue[100],
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, size: 20, color: Colors.blue[800]),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title.toUpperCase(),
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.grey[600],
+                  letterSpacing: 1,
+                ),
+              ),
+              const SizedBox(height: 8),
+              contentWidget,
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+  Widget _buildImagesSection() {
+    if (widget.imageUrls.isEmpty) return const SizedBox();
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'ATTACHED IMAGES',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            color: Colors.grey[700],
+          ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 120,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            itemCount: widget.imageUrls.length,
+            itemBuilder: (context, index) {
+              final imageUrl = widget.imageUrls[index]?.toString() ?? '';
+              final imageData = _imageCache[imageUrl];
+              
+              return Container(
+                margin: const EdgeInsets.only(right: 12),
+                child: Material(
+                  elevation: 2,
+                  borderRadius: BorderRadius.circular(12),
+                  child: GestureDetector(
+                    onTap: () => _showImagePreview(imageUrl),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        width: 120,
+                        height: 120,
+                        color: Colors.grey[200],
+                        child: _buildImageWidget(imageUrl, imageData),
+                      ),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  content,
-                  style: TextStyle(
-                    fontSize: isDescription ? 15 : 16,
-                    color: Colors.black87,
-                  ),
-                ),
-              ],
-            ),
+              );
+            },
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
+  Widget _buildImageWidget(String imageUrl, Uint8List? imageData) {
+    if (imageData == null) {
+      return Container(
+        color: Colors.grey[300],
+        child: const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+    
+    return Image.memory(
+      imageData,
+      fit: BoxFit.cover,
+      errorBuilder: (context, error, stackTrace) {
+        return Container(
+          color: Colors.grey[300],
+          child: const Center(
+            child: Icon(Icons.broken_image, color: Colors.grey, size: 40),
+          ),
+        );
+      },
+    );
+  }
 
   Widget _buildAdminSection() {
     return Container(
@@ -1957,6 +2027,39 @@ class _EmergencyCard extends StatelessWidget {
     this.onDelete,
     this.showDeleteButton = false,
   });
+  
+Future<String> _getFullName() async {
+  try {
+    final userId = data['userId'];
+    if (userId == null) return "Anonymous";
+
+    final userDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(userId)
+        .get();
+
+    if (!userDoc.exists) return "Anonymous";
+
+    final userData = userDoc.data() as Map<String, dynamic>;
+    final firstName = userData['firstName']?.toString().trim() ?? '';
+    final middleName = userData['middleName']?.toString().trim() ?? '';
+    final lastName = userData['lastName']?.toString().trim() ?? '';
+
+    if (firstName.isEmpty && lastName.isEmpty) return "Anonymous";
+
+    final nameParts = <String>[];
+    if (firstName.isNotEmpty) nameParts.add(firstName);
+    if (middleName.isNotEmpty) nameParts.add(middleName);
+    if (lastName.isNotEmpty) nameParts.add(lastName);
+
+    return nameParts.join(' ');
+  } catch (e) {
+    if (kDebugMode) {
+      print('Error getting user name: $e');
+    }
+    return "Anonymous";
+  }
+}
 
   @override
   Widget build(BuildContext context) {
@@ -1967,7 +2070,7 @@ class _EmergencyCard extends StatelessWidget {
 
     final location = data['address']?.toString() ?? 'Unknown location';
     final incidentType = data['incidentType']?.toString() ?? 'Unknown type';
-    final reporter = data['name']?.toString() ?? 'Anonymous';
+    final reporter = _getFullName();
     final status = data['status']?.toString() ?? 'pending';
     final iconColor = _getIncidentColor(data['incidentType']);
     final hasImages = (data['imageUrls'] as List<dynamic>? ?? []).isNotEmpty;
@@ -1998,7 +2101,6 @@ class _EmergencyCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            /// INCIDENT HEADER
             Row(
               children: [
                 if (isSelectable)
@@ -2029,8 +2131,6 @@ class _EmergencyCard extends StatelessWidget {
                     ),
                   ),
                 ),
-
-                // Status label
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
@@ -2060,8 +2160,6 @@ class _EmergencyCard extends StatelessWidget {
                     ],
                   ),
                 ),
-
-                // Delete button (only admin, all reports, not selectable mode)
                 if (showDeleteButton && !isSelectable) ...[
                   const SizedBox(width: 8),
                   IconButton(
@@ -2075,10 +2173,7 @@ class _EmergencyCard extends StatelessWidget {
                 ],
               ],
             ),
-
             const SizedBox(height: 12),
-
-            /// LOCATION
             Row(
               children: [
                 Icon(Icons.location_on, size: 16, color: Colors.blue[700]),
@@ -2094,20 +2189,39 @@ class _EmergencyCard extends StatelessWidget {
                 ),
               ],
             ),
-
-            const SizedBox(height: 6),
-
-            /// REPORTER + TIME
             Row(
               children: [
                 Icon(Icons.person, size: 16, color: Colors.blue[700]),
                 const SizedBox(width: 6),
-                Text(
-                  reporter,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Colors.grey[700],
-                  ),
+                FutureBuilder<String>(
+                  future: _getFullName(),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return Text(
+                        'Loading...',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[700],
+                        ),
+                      );
+                    }
+                    if (snapshot.hasError) {
+                      return Text(
+                        'Anonymous',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[700],
+                        ),
+                      );
+                    }
+                    return Text(
+                      snapshot.data ?? 'Anonymous',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey[700],
+                      ),
+                    );
+                  },
                 ),
                 const Spacer(),
                 if (hasImages) ...[
@@ -2123,7 +2237,6 @@ class _EmergencyCard extends StatelessWidget {
                 ),
               ],
             ),
-
             if (userRole == 'admin') ...[
               const SizedBox(height: 8),
               Container(
@@ -2167,32 +2280,192 @@ class _EmergencyCard extends StatelessWidget {
   }
   
   void _showDeleteConfirmation(BuildContext context, String docId, VoidCallback? onDelete) {
-  showDialog(
-    context: context,
-    builder: (BuildContext context) {
-      return AlertDialog(
-        title: const Text("Confirm Delete"),
-        content: const Text("Are you sure you want to delete this incident report? This action cannot be undone."),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text("Cancel"),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              if (onDelete != null) {
-                onDelete();
-              }
-            },
-            child: const Text(
-              "Delete",
-              style: TextStyle(color: Colors.red),
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text("Confirm Delete"),
+          content: const Text("Are you sure you want to delete this incident report? This action cannot be undone."),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text("Cancel"),
             ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                if (onDelete != null) {
+                  onDelete();
+                }
+              },
+              child: const Text(
+                "Delete",
+                style: TextStyle(color: Colors.red),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _UserCardTemplate extends StatelessWidget {
+  final String email;
+  final String role;
+  final Timestamp? createdAt;
+  final Timestamp? lastLogin;
+  final String? additionalInfo;
+  final bool isUpdating;
+  final Function(String?)? onRoleChanged;
+  final bool showRoleDropdown;
+  final Color? statusIndicator;
+  final List<Widget>? additionalActions;
+
+  const _UserCardTemplate({
+    required this.email,
+    required this.role,
+    this.createdAt,
+    this.lastLogin,
+    this.additionalInfo,
+    required this.isUpdating,
+    this.onRoleChanged,
+    required this.showRoleDropdown,
+    this.statusIndicator,
+    this.additionalActions,
+  });
+
+
+
+  String _formatTimestamp(Timestamp? timestamp) {
+    if (timestamp == null) return 'Never';
+    return DateFormat('MMM d, y - h:mm a').format(timestamp.toDate());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey[200]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              if (statusIndicator != null) ...[
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: statusIndicator,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: role == 'admin' ? Colors.blue[50] : Colors.green[50],
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  role == 'admin' ? Icons.admin_panel_settings : Icons.person,
+                  size: 20,
+                  color: role == 'admin' ? Colors.blue[800] : Colors.green[800],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      email,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w500,
+                        fontSize: 16,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Created: ${_formatTimestamp(createdAt)}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey,
+                      ),
+                    ),
+                    if (lastLogin != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        'Last active: ${_formatTimestamp(lastLogin)}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
+                    if (additionalInfo != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        additionalInfo!,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.orange,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (isUpdating) 
+                const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+              else 
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (showRoleDropdown) ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: role == 'admin' ? Colors.blue[50] : Colors.grey[100],
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: role == 'admin' ? Colors.blue[200]! : Colors.grey[300]!,
+                          ),
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            value: role,
+                            icon: const Icon(Icons.arrow_drop_down, size: 16),
+                            dropdownColor: Colors.white,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: role == 'admin' ? Colors.blue[800] : Colors.grey[800],
+                            ),
+                            onChanged: onRoleChanged,
+                            items: const [
+                              DropdownMenuItem(value: 'user', child: Text('USER')),
+                              DropdownMenuItem(value: 'admin', child: Text('ADMIN')),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    if (additionalActions != null) ...additionalActions!,
+                  ],
+                ),
+            ],
           ),
         ],
-      );
-    },
-  );
-}
+      ),
+    );
+  }
 }

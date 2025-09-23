@@ -525,7 +525,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
 
                         // Forgot Password link (only shown in login mode)
                         if (isLogin) ...[
-                          const SizedBox(height: 12),
+                          const SizedBox(height: 8),
                           Align(
                             alignment: Alignment.centerRight,
                             child: isResettingPassword
@@ -738,7 +738,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
                             ),
                         ],
 
-                        const SizedBox(height: 28),
+                        const SizedBox(height: 10),
 
                         // Submit Button
                         isLoading
@@ -786,7 +786,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
                           ),
                         ),
 
-                        const SizedBox(height: 24),
+                        const SizedBox(height: 8),
                         // Footer
                         Container(
                           padding: const EdgeInsets.all(16),
