@@ -59,7 +59,7 @@ class _NavigationScreenState extends State<NavigationScreen>
         title: 'Maps',
         icon: Icons.map_rounded,
         screenBuilder: (onMenuPressed) =>
-            MapMonitoringpingScreen(onMenuPressed: onMenuPressed),
+            MapMonitoringScreen(onMenuPressed: onMenuPressed),
       ),
       NavigationItem(
         title: 'Analytics',

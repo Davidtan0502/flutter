@@ -406,7 +406,7 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
           runSpacing: 8,
           children: [
             FilterChip(
-              label: const Text('Recent (24h)'),
+              label: const Text('Today'),
               selected: _selectedFilter == 'recent',
               onSelected: (selected) {
                 setState(() {
@@ -736,15 +736,57 @@ Widget _buildEmergencyList() {
         return _buildEmptyState();
       }
 
+      // Group by date for All Reports view
+      final Map<String, List<QueryDocumentSnapshot>> groupedDocs = {};
+      if (_selectedFilter == 'all') {
+        for (final doc in filteredDocs) {
+          final data = doc.data() as Map<String, dynamic>;
+          final timestamp = data['timestamp'] as Timestamp?;
+          final dateKey = timestamp != null
+              ? DateFormat('yyyy-MM-dd').format(timestamp.toDate())
+              : 'Unknown Date';
+          
+          if (!groupedDocs.containsKey(dateKey)) {
+            groupedDocs[dateKey] = [];
+          }
+          groupedDocs[dateKey]!.add(doc);
+        }
+      }
+
       return RefreshIndicator(
         onRefresh: _refreshData,
-        child: ListView.separated(
-          controller: _scrollController,
-          padding: const EdgeInsets.only(bottom: 16),
-          itemCount: filteredDocs.length,
-          separatorBuilder: (context, index) => const SizedBox(height: 12),
-          itemBuilder: (context, index) {
-            final doc = filteredDocs[index];
+        child: _selectedFilter == 'all' 
+            ? _buildGroupedList(groupedDocs) // Use grouped list for All Reports
+            : _buildRegularList(filteredDocs), // Use regular list for Recent
+      );
+    },
+  );
+}
+
+// New method to build list with date labels
+Widget _buildGroupedList(Map<String, List<QueryDocumentSnapshot>> groupedDocs) {
+  final sortedDates = groupedDocs.keys.toList()..sort((a, b) => b.compareTo(a));
+  
+  return ListView.builder(
+    controller: _scrollController,
+    padding: const EdgeInsets.only(bottom: 16),
+    itemCount: _calculateGroupedItemCount(groupedDocs, sortedDates),
+    itemBuilder: (context, index) {
+      var currentIndex = 0;
+      
+      for (final date in sortedDates) {
+        final docs = groupedDocs[date]!;
+        
+        // Date header
+        if (index == currentIndex) {
+          return _buildDateHeader(date);
+        }
+        currentIndex++;
+        
+        // Documents for this date
+        for (int i = 0; i < docs.length; i++) {
+          if (index == currentIndex) {
+            final doc = docs[i];
             final data = doc.data() as Map<String, dynamic>;
             
             if (!kIsWeb) {
@@ -769,8 +811,108 @@ Widget _buildEmergencyList() {
               onDelete: () => _deleteIncident(doc.id),
               showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
             );
-          },
+          }
+          currentIndex++;
+        }
+      }
+      
+      return const SizedBox.shrink();
+    },
+  );
+}
+
+// Helper method to calculate total item count (headers + documents)
+int _calculateGroupedItemCount(Map<String, List<QueryDocumentSnapshot>> groupedDocs, List<String> sortedDates) {
+  int count = groupedDocs.length; // Date headers
+  for (final docs in groupedDocs.values) {
+    count += docs.length; // Documents
+  }
+  return count;
+}
+
+// Method to build date header
+Widget _buildDateHeader(String dateKey) {
+  final date = dateKey == 'Unknown Date' 
+      ? 'Unknown Date'
+      : DateFormat('MMMM d, yyyy').format(DateTime.parse(dateKey));
+  
+  return Container(
+    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+    margin: const EdgeInsets.only(top: 16, bottom: 8),
+    decoration: BoxDecoration(
+      color: Colors.blue[50],
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: Colors.blue[100]!),
+    ),
+    child: Row(
+      children: [
+        Icon(Icons.calendar_today, size: 16, color: Colors.blue[800]),
+        const SizedBox(width: 8),
+        Text(
+          date,
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: Colors.blue[800],
+            fontSize: 14,
+          ),
         ),
+        const Spacer(),
+        Text(
+          '${_getDaySuffix(DateTime.parse(dateKey))}',
+          style: TextStyle(
+            color: Colors.blue[600],
+            fontSize: 12,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+// Helper method to get day suffix (st, nd, rd, th)
+String _getDaySuffix(DateTime date) {
+  final day = date.day;
+  if (day >= 11 && day <= 13) return '${day}th';
+  switch (day % 10) {
+    case 1: return '${day}st';
+    case 2: return '${day}nd';
+    case 3: return '${day}rd';
+    default: return '${day}th';
+  }
+}
+
+// Existing regular list builder (unchanged)
+Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
+  return ListView.separated(
+    controller: _scrollController,
+    padding: const EdgeInsets.only(bottom: 16),
+    itemCount: filteredDocs.length,
+    separatorBuilder: (context, index) => const SizedBox(height: 12),
+    itemBuilder: (context, index) {
+      final doc = filteredDocs[index];
+      final data = doc.data() as Map<String, dynamic>;
+      
+      if (!kIsWeb) {
+        final imageUrls = data['imageUrls'] as List<dynamic>? ?? [];
+        for (final url in imageUrls) {
+          if (url is String) {
+            DefaultCacheManager().getSingleFile(url);
+          }
+        }
+      }
+      
+      return _EmergencyCard(
+        data: data,
+        docId: doc.id,
+        onTap: () => _showEmergencyDetails(doc),
+        getStatusColor: _getStatusColor,
+        getStatusIcon: _getStatusIcon,
+        userRole: widget.userRole,
+        isSelectable: _isMultiSelectMode,
+        isSelected: _selectedIncidents.contains(doc.id),
+        onSelect: () => _selectIncident(doc.id),
+        onDelete: () => _deleteIncident(doc.id),
+        showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
       );
     },
   );
@@ -832,7 +974,7 @@ Widget _buildEmergencyList() {
 
   List<QueryDocumentSnapshot> _filterEmergencies(List<QueryDocumentSnapshot> docs) {
     final now = DateTime.now();
-    final twentyFourHoursAgo = now.subtract(const Duration(hours: 24));
+    final startOfToday = DateTime(now.year, now.month, now.day); // 12:00 AM today
     
     return docs.where((doc) {
       final data = doc.data() as Map<String, dynamic>;
@@ -840,10 +982,10 @@ Widget _buildEmergencyList() {
       final type = (data['incidentType'] ?? '').toString().toLowerCase();
       final timestamp = data['timestamp'] as Timestamp?;
       
-      // Apply time filter
+      // Apply time filter - changed from 24 hours to today (from 12:00 AM)
       if (_selectedFilter == 'recent' && timestamp != null) {
         final reportTime = timestamp.toDate();
-        if (reportTime.isBefore(twentyFourHoursAgo)) {
+        if (reportTime.isBefore(startOfToday)) {
           return false;
         }
       }

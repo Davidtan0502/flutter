@@ -6,6 +6,7 @@ import 'package:radar_dashboard/login/admin/dashboard_user_card.dart';
 import 'package:radar_dashboard/login/admin/users_search_bar.dart';
 import 'package:radar_dashboard/login/admin/users_statistics.dart';
 import 'package:radar_dashboard/login/admin/system_toggle.dart';
+import 'package:radar_dashboard/navigation/main_navigation.dart';
 
 class AdminPanelScreen extends StatefulWidget {
   final int initialSystem; // 0 = Dashboard, 1 = Radar
@@ -114,19 +115,25 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
     );
   }
 
-  AppBar _buildAppBar() {
-    return AppBar(
-      leading: IconButton(
-        icon: const Icon(Icons.arrow_back, color: Colors.white),
-        onPressed: () {
-          // Always navigate fresh to AdminPanelScreen
-          Navigator.pushAndRemoveUntil(
-            context,
-            MaterialPageRoute(builder: (_) => DashboardScreen(onMenuPressed: () {})),
-            (route) => false, // remove all previous routes
-          );
-        },
-      ),
+AppBar _buildAppBar() {
+  return AppBar(
+    leading: IconButton(
+      icon: const Icon(Icons.arrow_back, color: Colors.white),
+      onPressed: () {
+        // Navigate back to NavigationScreen which contains the main nav
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => NavigationScreen(
+            isDarkMode: false, // You'll need to get these values properly
+            onToggleTheme: (bool value) { 
+              // Add your theme toggle logic here or pass it down
+            },
+            userRole: 'admin', // You'll need to get the actual user role
+          )),
+          (route) => false,
+        );
+      },
+    ),
       title: Text(
         _selectedSystem == 0 ? 'DASHBOARD USER MANAGEMENT' : 'RADAR APP USER MANAGEMENT',
         style: const TextStyle(

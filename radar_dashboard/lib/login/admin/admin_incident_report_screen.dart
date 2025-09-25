@@ -517,7 +517,7 @@ class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> w
           runSpacing: 8,
           children: [
             FilterChip(
-              label: const Text('Recent (24h)'),
+              label: const Text('Today'),
               selected: _selectedFilter == 'recent',
               onSelected: (selected) {
                 setState(() {
@@ -828,7 +828,7 @@ class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> w
 
   List<QueryDocumentSnapshot> _filterEmergencies(List<QueryDocumentSnapshot> docs) {
     final now = DateTime.now();
-    final twentyFourHoursAgo = now.subtract(const Duration(hours: 24));
+    final startOfToday = DateTime(now.year, now.month, now.day); // 12:00 AM today
     
     return docs.where((doc) {
       final data = doc.data() as Map<String, dynamic>;
@@ -836,13 +836,15 @@ class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> w
       final type = (data['incidentType'] ?? '').toString().toLowerCase();
       final timestamp = data['timestamp'] as Timestamp?;
       
+      // Apply time filter - changed from 24 hours to today (from 12:00 AM)
       if (_selectedFilter == 'recent' && timestamp != null) {
         final reportTime = timestamp.toDate();
-        if (reportTime.isBefore(twentyFourHoursAgo)) {
+        if (reportTime.isBefore(startOfToday)) {
           return false;
         }
       }
       
+      // Apply date filter if selected
       if (_selectedDate != null && timestamp != null) {
         final reportDate = timestamp.toDate();
         if (!DateUtils.isSameDay(reportDate, _selectedDate)) {
@@ -850,6 +852,7 @@ class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> w
         }
       }
       
+      // Apply search filter
       return _searchQuery.isEmpty ||
           location.contains(_searchQuery) ||
           type.contains(_searchQuery);

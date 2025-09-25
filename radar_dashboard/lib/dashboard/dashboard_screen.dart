@@ -6,6 +6,7 @@ import 'package:radar_dashboard/components/report_table.dart';
 import 'package:radar_dashboard/components/map_monitoring.dart';
 import 'package:radar_dashboard/components/weather_monitoring.dart';
 import 'package:radar_dashboard/components/monthly_incident_report.dart';
+import 'package:radar_dashboard/login/admin/admin_panel_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final VoidCallback onMenuPressed;
@@ -68,9 +69,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
             return IconButton(
               icon: const Icon(Icons.admin_panel_settings_outlined, color: Colors.white),
               tooltip: 'Admin Panel',
-              onPressed: () {
-                Navigator.pushNamed(context, '/admin-panel');
-              },
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => AdminPanelScreen()),
+                  );
+                },
             );
           },
         ),
@@ -227,6 +231,15 @@ class IncidentStatsWidget extends StatelessWidget {
       q = q
           .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
           .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(end));
+    } else {
+      // CHANGED: Default now shows today's incidents (from 12:00 AM to 11:59 PM)
+      final now = DateTime.now();
+      final startOfDay = DateTime(now.year, now.month, now.day, 0, 0, 0);
+      final endOfDay = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
+
+      q = q
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
+          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(endOfDay));
     }
 
     return q;
