@@ -1,4 +1,4 @@
-import 'dart:typed_data'; // for Uint8List
+import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
@@ -9,6 +9,245 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:intl/intl.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:shimmer/shimmer.dart';
+
+// Constants and Configuration
+class IncidentReportConstants {
+  static const Map<String, Color> colorScheme = {
+    'primary': Color(0xFF2C5282),
+    'primaryLight': Color(0xFFE1F5FF),
+    'primaryDark': Color(0xFF1A365D),
+    'secondary': Color(0xFF99CEFF),
+    'success': Color(0xFF4CAF50),
+    'warning': Color(0xFFFF9800),
+    'error': Color(0xFFF44336),
+    'info': Color(0xFF2196F3),
+    'purple': Color(0xFF9C27B0),
+  };
+
+  static const List<String> statusOptions = [
+    'pending',
+    'in progress',
+    'resolved',
+    'under review',
+    'declined'
+  ];
+
+  static const List<String> filterOptions = ['recent', 'all'];
+}
+
+// Data Models
+class IncidentData {
+  final String id;
+  final String? incidentType;
+  final String? address;
+  final String? name;
+  final String? contactNumber;
+  final String? description;
+  final String status;
+  final Timestamp? timestamp;
+  final List<dynamic> imageUrls;
+  final List<dynamic> statusUpdates;
+
+  IncidentData({
+    required this.id,
+    required this.incidentType,
+    required this.address,
+    required this.name,
+    required this.contactNumber,
+    required this.description,
+    required this.status,
+    required this.timestamp,
+    required this.imageUrls,
+    required this.statusUpdates,
+  });
+
+  factory IncidentData.fromDocument(QueryDocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    return IncidentData(
+      id: doc.id,
+      incidentType: data['incidentType']?.toString(),
+      address: data['address']?.toString(),
+      name: data['name']?.toString(),
+      contactNumber: data['contactNumber']?.toString(),
+      description: data['description']?.toString(),
+      status: (data['status'] ?? 'pending').toString(),
+      timestamp: data['timestamp'] as Timestamp?,
+      imageUrls: data['imageUrls'] as List<dynamic>? ?? [],
+      statusUpdates: data['statusUpdates'] as List<dynamic>? ?? [],
+    );
+  }
+}
+
+// Service Classes
+class IncidentService {
+  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  static Stream<QuerySnapshot> getIncidentsStream() {
+    return _firestore
+        .collection('incidents')
+        .orderBy('timestamp', descending: true)
+        .snapshots();
+  }
+
+  static Future<void> deleteIncident(String id) async {
+    await _firestore.collection('incidents').doc(id).delete();
+  }
+
+  static Future<void> updateIncidentStatus(
+    String id, {
+    required String status,
+    required String note,
+    required String updatedBy,
+  }) async {
+    final doc = await _firestore.collection('incidents').doc(id).get();
+    if (!doc.exists) throw Exception("Document does not exist");
+
+    final currentData = doc.data() as Map<String, dynamic>;
+    final currentUpdates = List<Map<String, dynamic>>.from(
+      currentData['statusUpdates'] ?? [],
+    );
+
+    final newStatusUpdate = {
+      'status': status,
+      'timestamp': Timestamp.now(),
+      'note': note,
+      'updatedBy': updatedBy,
+    };
+
+    currentUpdates.add(newStatusUpdate);
+
+    await _firestore.collection('incidents').doc(id).update({
+      'status': status,
+      'statusUpdates': currentUpdates,
+      'lastUpdated': FieldValue.serverTimestamp(),
+    });
+  }
+
+  static Future<void> batchUpdateStatus(
+    List<String> ids,
+    String status,
+  ) async {
+    final batch = _firestore.batch();
+    final updateTime = FieldValue.serverTimestamp();
+
+    for (final id in ids) {
+      final docRef = _firestore.collection('incidents').doc(id);
+      batch.update(docRef, {
+        'status': status,
+        'lastUpdated': updateTime,
+      });
+    }
+
+    await batch.commit();
+  }
+
+  static Future<void> batchDeleteIncidents(List<String> ids) async {
+    final batch = _firestore.batch();
+    for (final id in ids) {
+      final docRef = _firestore.collection('incidents').doc(id);
+      batch.delete(docRef);
+    }
+    await batch.commit();
+  }
+}
+
+class StyleService {
+  static Map<String, dynamic> getStatusStyle(String status) {
+    final statusLower = status.toLowerCase();
+    final colors = IncidentReportConstants.colorScheme;
+
+    final Map<String, Map<String, dynamic>> styles = {
+      'resolved': {
+        'color': colors['success']!,
+        'icon': Icons.check_circle_rounded,
+        'bgColor': colors['success']!.withOpacity(0.1),
+        'label': 'Resolved',
+      },
+      'in progress': {
+        'color': colors['info']!,
+        'icon': Icons.autorenew_rounded,
+        'bgColor': colors['info']!.withOpacity(0.1),
+        'label': 'In Progress',
+      },
+      'pending': {
+        'color': colors['warning']!,
+        'icon': Icons.access_time_rounded,
+        'bgColor': colors['warning']!.withOpacity(0.1),
+        'label': 'Pending',
+      },
+      'under review': {
+        'color': colors['purple']!,
+        'icon': Icons.visibility_rounded,
+        'bgColor': colors['purple']!.withOpacity(0.1),
+        'label': 'Under Review',
+      },
+      'declined': {
+        'color': colors['error']!,
+        'icon': Icons.cancel_rounded,
+        'bgColor': colors['error']!.withOpacity(0.1),
+        'label': 'Declined',
+      },
+    };
+
+    return styles[statusLower] ?? {
+      'color': Colors.grey,
+      'icon': Icons.help_outline_rounded,
+      'bgColor': Colors.grey.withOpacity(0.1),
+      'label': 'Unknown',
+    };
+  }
+
+  static Map<String, dynamic> getIncidentStyle(String? incidentType) {
+    final typeLower = incidentType?.toLowerCase() ?? 'unknown';
+    final colors = IncidentReportConstants.colorScheme;
+
+    final Map<String, Map<String, dynamic>> styles = {
+      'fire': {
+        'color': colors['error']!,
+        'icon': Icons.local_fire_department_rounded,
+        'gradient': LinearGradient(
+          colors: [colors['error']!, const Color(0xFFFF6B35)],
+        ),
+      },
+      'accident': {
+        'color': colors['warning']!,
+        'icon': Icons.car_crash_rounded,
+        'gradient': LinearGradient(
+          colors: [colors['warning']!, const Color(0xFFFFB74D)],
+        ),
+      },
+      'flood': {
+        'color': colors['info']!,
+        'icon': Icons.water_damage_rounded,
+        'gradient': LinearGradient(
+          colors: [colors['info']!, const Color(0xFF4FC3F7)],
+        ),
+      },
+      'medical': {
+        'color': const Color(0xFFE91E63),
+        'icon': Icons.medical_services_rounded,
+        'gradient': LinearGradient(
+          colors: [const Color(0xFFE91E63), const Color(0xFFF48FB1)],
+        ),
+      },
+      'crime': {
+        'color': colors['purple']!,
+        'icon': Icons.security_rounded,
+        'gradient': LinearGradient(
+          colors: [colors['purple']!, const Color(0xFFCE93D8)],
+        ),
+      },
+    };
+
+    return styles[typeLower] ?? {
+      'color': Colors.grey,
+      'icon': Icons.warning_rounded,
+      'gradient': LinearGradient(
+        colors: [Colors.grey, Colors.grey.shade400],
+      ),
+    };
+  }
+}
 
 class IncidentReportScreen extends StatefulWidget {
   final VoidCallback onMenuPressed;
@@ -24,181 +263,67 @@ class IncidentReportScreen extends StatefulWidget {
   State<IncidentReportScreen> createState() => _IncidentReportScreenState();
 }
 
-class _IncidentReportScreenState extends State<IncidentReportScreen> with SingleTickerProviderStateMixin {
+class _IncidentReportScreenState extends State<IncidentReportScreen>
+    with SingleTickerProviderStateMixin {
   final TextEditingController _searchController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  final List<String> _selectedIncidents = [];
+  final List<QueryDocumentSnapshot> _currentDocs = [];
+
+  late AnimationController _animationController;
+  late Animation<double> _fadeAnimation;
+
   String _searchQuery = '';
   String _selectedFilter = 'recent';
   DateTime? _selectedDate;
-  final List<String> _selectedIncidents = [];
   bool _isMultiSelectMode = false;
-  late AnimationController _animationController;
-  late Animation<double> _fadeAnimation;
-  final ScrollController _scrollController = ScrollController();
   bool _isLoading = false;
   bool _hasNewUpdates = false;
-  List<QueryDocumentSnapshot> _currentDocs = [];
-
-  Future<void> _deleteIncident(String id, {bool showUndo = true}) async {
-  try {
-    // Get the document data before deleting for potential undo
-    final docSnapshot = await FirebaseFirestore.instance
-        .collection('incidents')
-        .doc(id)
-        .get();
-    
-    final incidentData = docSnapshot.data();
-    
-    // Delete the document
-    await FirebaseFirestore.instance
-        .collection('incidents')
-        .doc(id)
-        .delete();
-    
-    // Show undo snackbar if requested
-    if (showUndo && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Incident deleted'),
-          backgroundColor: Colors.red,
-          action: SnackBarAction(
-            label: 'UNDO',
-            textColor: Colors.white,
-            onPressed: () => _undoDelete(id, incidentData),
-          ),
-          duration: const Duration(seconds: 5),
-        ),
-      );
-    }
-  } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to delete: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-}
-
-Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
-  if (data == null) return;
-  
-  try {
-    await FirebaseFirestore.instance
-        .collection('incidents')
-        .doc(id)
-        .set(data);
-    
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Incident restored'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    }
-  } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to restore: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-}
 
   @override
   void initState() {
     super.initState();
-    _searchController.addListener(_onSearchChanged);
-    
+    _initializeControllers();
+    _setupAnimations();
+  }
+
+  @override
+  void dispose() {
+    _disposeControllers();
+    super.dispose();
+  }
+
+  void _initializeControllers() {
+    _searchController.addListener(() {
+      setState(() => _searchQuery = _searchController.text.toLowerCase());
+    });
+  }
+
+  void _setupAnimations() {
     _animationController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 300),
+      duration: const Duration(milliseconds: 500),
     );
-    
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
+    _fadeAnimation = CurvedAnimation(
+      parent: _animationController,
+      curve: Curves.easeInOutQuart,
     );
-    
-    // Start animation after build
     SchedulerBinding.instance.addPostFrameCallback((_) {
       _animationController.forward();
     });
   }
 
-  @override
-  void dispose() {
-    _searchController.removeListener(_onSearchChanged);
+  void _disposeControllers() {
     _searchController.dispose();
     _animationController.dispose();
     _scrollController.dispose();
-    super.dispose();
   }
 
-  void _onSearchChanged() {
-    setState(() {
-      _searchQuery = _searchController.text.toLowerCase();
-    });
-  }
-
-  Color _getStatusColor(String status) {
-    switch (status.toLowerCase()) {
-      case 'resolved':
-        return const Color(0xFF4CAF50);
-      case 'in progress':
-        return const Color(0xFF2196F3);
-      case 'pending':
-        return const Color(0xFFFF9800); {}
-      case 'under review':
-        return const Color.fromRGBO(156, 39, 176, 1);
-      case 'declined':
-        return const Color(0xFFF44336);
-      default:
-        return const Color(0xFF9E9E9E);
-    }
-  }
-
-  IconData _getStatusIcon(String status) {
-    switch (status.toLowerCase()) {
-      case 'resolved':
-        return Icons.check_circle;
-      case 'in progress':
-        return Icons.autorenew;
-      case 'pending':
-        return Icons.access_time;
-      case 'under review':
-      return Icons.visibility;
-      case 'declined':
-        return Icons.cancel;
-      default:
-        return Icons.help_outline;
-    }
-  }
-
-  Future<void> _refreshData() async {
-    setState(() {
-      _isLoading = true;
-      _hasNewUpdates = false;
-    });
-    
-    // Simulate network request
-    await Future.delayed(const Duration(seconds: 1));
-    
-    setState(() {
-      _isLoading = false;
-    });
-  }
-
+  // Selection Management
   void _toggleMultiSelectMode() {
     setState(() {
       _isMultiSelectMode = !_isMultiSelectMode;
-      if (!_isMultiSelectMode) {
-        _selectedIncidents.clear();
-      }
+      if (!_isMultiSelectMode) _selectedIncidents.clear();
     });
   }
 
@@ -209,21 +334,16 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
       } else {
         _selectedIncidents.add(id);
       }
-      
-      if (_selectedIncidents.isEmpty) {
-        _isMultiSelectMode = false;
-      }
+      if (_selectedIncidents.isEmpty) _isMultiSelectMode = false;
     });
   }
 
   void _selectAllIncidents() {
     setState(() {
       if (_selectedIncidents.length == _currentDocs.length) {
-        // If all are selected, deselect all
         _selectedIncidents.clear();
         _isMultiSelectMode = false;
       } else {
-        // Select all current filtered documents
         _selectedIncidents.clear();
         _selectedIncidents.addAll(_currentDocs.map((doc) => doc.id));
         _isMultiSelectMode = true;
@@ -231,83 +351,205 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
     });
   }
 
-  Future<void> _batchUpdateStatus(String status) async {
-    if (_selectedIncidents.isEmpty) return;
-    
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Confirm Batch Update'),
-        content: Text('Update ${_selectedIncidents.length} incidents to "$status"?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Update'),
-          ),
-        ],
-      ),
-    );
-    
-    if (confirmed != true) return;
-    
-    final batch = FirebaseFirestore.instance.batch();
-    
-    for (final id in _selectedIncidents) {
-      final docRef = FirebaseFirestore.instance.collection('incidents').doc(id);
-      final updates = {
-        'status': status,
-        'lastUpdated': FieldValue.serverTimestamp(),
-      };
-      
-      batch.update(docRef, updates);
-    }
-    
+  // Delete Operations
+  Future<void> _deleteIncident(String id, {bool showUndo = true}) async {
     try {
-      await batch.commit();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Updated ${_selectedIncidents.length} incidents'),
-          backgroundColor: Colors.green,
-        ),
-      );
+      // Get the document data before deleting for potential undo
+      final docSnapshot = await FirebaseFirestore.instance
+          .collection('incidents')
+          .doc(id)
+          .get();
       
-      setState(() {
-        _selectedIncidents.clear();
-        _isMultiSelectMode = false;
-      });
+      final incidentData = docSnapshot.data();
+      
+      // Delete the document
+      await FirebaseFirestore.instance
+          .collection('incidents')
+          .doc(id)
+          .delete();
+      
+      // Show undo snackbar if requested
+      if (showUndo && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Incident deleted'),
+            backgroundColor: Colors.red,
+            action: SnackBarAction(
+              label: 'UNDO',
+              textColor: Colors.white,
+              onPressed: () => _undoDelete(id, incidentData),
+            ),
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to update: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
+  Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
+    if (data == null) return;
+    
+    try {
+      await FirebaseFirestore.instance
+          .collection('incidents')
+          .doc(id)
+          .set(data);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Incident restored'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to restore: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // Batch Operations
+  Future<void> _batchUpdateStatus(String status) async {
+    if (_selectedIncidents.isEmpty) return;
+
+    final confirmed = await _showConfirmationDialog(
+      title: 'Confirm Batch Update',
+      content:
+          'Update ${_selectedIncidents.length} incidents to "${StyleService.getStatusStyle(status)['label']}"?',
+      confirmColor: StyleService.getStatusStyle(status)['color'] as Color,
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await IncidentService.batchUpdateStatus(_selectedIncidents, status);
+      _showSuccessSnackbar(
+          'Updated ${_selectedIncidents.length} incidents to ${StyleService.getStatusStyle(status)['label']}');
+      _clearSelection();
+    } catch (e) {
+      _showErrorSnackbar('Failed to update: $e');
+    }
+  }
+
+  Future<void> _showBatchDeleteConfirmation() async {
+    final confirmed = await _showConfirmationDialog(
+      title: 'Confirm Batch Delete',
+      content:
+          'Are you sure you want to delete ${_selectedIncidents.length} incidents? This action cannot be undone.',
+      confirmText: 'Delete',
+      confirmColor: IncidentReportConstants.colorScheme['error']!,
+    );
+
+    if (confirmed != true) return;
+
+    final incidentsToDelete = <String, Map<String, dynamic>>{};
+    for (final id in _selectedIncidents) {
+      try {
+        final docSnapshot = await FirebaseFirestore.instance
+            .collection('incidents')
+            .doc(id)
+            .get();
+
+        if (docSnapshot.exists) {
+          incidentsToDelete[id] = docSnapshot.data()!;
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('Error getting document $id: $e');
+        }
+      }
+    }
+
+    try {
+      await IncidentService.batchDeleteIncidents(_selectedIncidents);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Deleted ${_selectedIncidents.length} incidents'),
+            backgroundColor: IncidentReportConstants.colorScheme['error'],
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            action: SnackBarAction(
+              label: 'UNDO',
+              textColor: Colors.white,
+              onPressed: () => _undoBatchDelete(incidentsToDelete),
+            ),
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+
+      _clearSelection();
+    } catch (e) {
+      _showErrorSnackbar('Failed to delete: $e');
+    }
+  }
+
+  Future<void> _undoBatchDelete(Map<String, Map<String, dynamic>> incidents) async {
+    if (incidents.isEmpty) return;
+
+    final batch = FirebaseFirestore.instance.batch();
+
+    for (final entry in incidents.entries) {
+      final docRef = FirebaseFirestore.instance.collection('incidents').doc(entry.key);
+      batch.set(docRef, entry.value);
+    }
+
+    try {
+      await batch.commit();
+      _showSuccessSnackbar('Incidents restored');
+    } catch (e) {
+      _showErrorSnackbar('Failed to restore: $e');
+    }
+  }
+
+  void _clearSelection() {
+    setState(() {
+      _selectedIncidents.clear();
+      _isMultiSelectMode = false;
+    });
+  }
+
+  // UI Components
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: _buildAppBar(),
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Color.fromARGB(255, 225, 245, 255), Color.fromARGB(255, 153, 206, 255)],
+            colors: [
+              IncidentReportConstants.colorScheme['primaryLight']!,
+              IncidentReportConstants.colorScheme['secondary']!
+            ],
           ),
         ),
         child: Padding(
-          padding: const EdgeInsets.all(16.0),
+          padding: const EdgeInsets.all(20.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildSearchBar(),
-              const SizedBox(height: 16),
+              const SizedBox(height: 20),
               _buildFilterSection(),
               const SizedBox(height: 16),
               if (_isMultiSelectMode) _buildBatchActions(),
@@ -329,23 +571,26 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
   AppBar _buildAppBar() {
     return AppBar(
       leading: IconButton(
-        icon: const Icon(Icons.menu, color: Colors.white),
+        icon: const Icon(Icons.menu_rounded, color: Colors.white),
         onPressed: widget.onMenuPressed,
       ),
-      title: const Text('EMERGENCY INCIDENT REPORT'),
-      titleTextStyle: const TextStyle(
-        color: Colors.white,
-        fontSize: 20,
-        fontWeight: FontWeight.bold,
+      title: const Text(
+        'EMERGENCY INCIDENT REPORT',
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 20,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.5,
+        ),
       ),
-      backgroundColor: const Color(0xFF2C5282),
-      elevation: 4,
+      backgroundColor: IncidentReportConstants.colorScheme['primary'],
+      elevation: 8,
       centerTitle: true,
       actions: [
         if (widget.userRole == 'admin')
           IconButton(
             icon: Icon(
-              _isMultiSelectMode ? Icons.cancel : Icons.select_all,
+              _isMultiSelectMode ? Icons.cancel_rounded : Icons.select_all_rounded,
               color: Colors.white,
             ),
             onPressed: _toggleMultiSelectMode,
@@ -353,7 +598,10 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
           ),
         if (_hasNewUpdates)
           IconButton(
-            icon: const Icon(Icons.new_releases, color: Colors.amber),
+            icon: Badge(
+              backgroundColor: Colors.amber,
+              child: const Icon(Icons.new_releases_rounded, color: Colors.white),
+            ),
             onPressed: _refreshData,
             tooltip: 'New updates available',
           ),
@@ -365,32 +613,27 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
     return Hero(
       tag: 'search_bar',
       child: Material(
-        elevation: 4,
-        borderRadius: BorderRadius.circular(30),
+        elevation: 6,
+        borderRadius: BorderRadius.circular(25),
         child: TextField(
           controller: _searchController,
           decoration: InputDecoration(
             hintText: 'Search incidents by location or type...',
-            hintStyle: TextStyle(color: Colors.grey[600]),
-            prefixIcon: Icon(Icons.search, color: Colors.blue[800]),
+            prefixIcon:
+                Icon(Icons.search_rounded, color: IncidentReportConstants.colorScheme['primary']),
+            suffixIcon: _searchQuery.isNotEmpty
+                ? IconButton(
+                    icon: Icon(Icons.clear_rounded, color: IncidentReportConstants.colorScheme['primary']),
+                    onPressed: () => _searchController.clear(),
+                  )
+                : null,
             filled: true,
             fillColor: Colors.white,
             contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(30),
+              borderRadius: BorderRadius.circular(25),
               borderSide: BorderSide.none,
             ),
-            suffixIcon: _searchQuery.isNotEmpty
-                ? IconButton(
-                    icon: Icon(Icons.clear, color: Colors.blue[800]),
-                    onPressed: () {
-                      _searchController.clear();
-                      setState(() {
-                        _searchQuery = '';
-                      });
-                    },
-                  )
-                : null,
           ),
         ),
       ),
@@ -405,518 +648,359 @@ Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
           spacing: 8,
           runSpacing: 8,
           children: [
-            FilterChip(
-              label: const Text('Today'),
+            _buildFilterChip(
+              label: 'Recent',
               selected: _selectedFilter == 'recent',
-              onSelected: (selected) {
-                setState(() {
-                  _selectedFilter = 'recent';
-                  _selectedDate = null;
-                });
-              },
-              selectedColor: Colors.blue[800],
-              checkmarkColor: Colors.white,
-              labelStyle: TextStyle(
-                color: _selectedFilter == 'recent' ? Colors.white : Colors.black87,
-              ),
+              onSelected: () => setState(() {
+                _selectedFilter = 'recent';
+                _selectedDate = null;
+              }),
             ),
-            FilterChip(
-              label: const Text('All Reports'),
+            _buildFilterChip(
+              label: 'All Reports',
               selected: _selectedFilter == 'all',
-              onSelected: (selected) {
-                setState(() {
-                  _selectedFilter = 'all';
-                });
-              },
-              selectedColor: Colors.blue[800],
-              checkmarkColor: Colors.white,
-              labelStyle: TextStyle(
-                color: _selectedFilter == 'all' ? Colors.white : Colors.black87,
-              ),
+              onSelected: () => setState(() => _selectedFilter = 'all'),
             ),
             if (_selectedFilter == 'all')
-              FilterChip(
-                label: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.calendar_today, size: 16),
-                    const SizedBox(width: 4),
-                    Text(
-                      _selectedDate == null
-                          ? "Date"
-                          : DateFormat('MMM d').format(_selectedDate!),
-                    ),
-                  ],
-                ),
-                selected: _selectedDate != null,
-                onSelected: (_) async {
-                  final pickedDate = await showDatePicker(
-                    context: context,
-                    initialDate: _selectedDate ?? DateTime.now(),
-                    firstDate: DateTime(2000),
-                    lastDate: DateTime.now(),
-                  );
-                  if (pickedDate != null) {
-                    setState(() {
-                      _selectedDate = pickedDate;
-                    });
-                  }
-                },
-                selectedColor: Colors.blue[800],
-                checkmarkColor: Colors.white,
-              ),
+              _buildDateFilterChip(),
           ],
         ),
       ],
     );
   }
 
- Widget _buildBatchActions() {
-  return Material(
-    elevation: 2,
-    borderRadius: BorderRadius.circular(12),
-    child: Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
+  Widget _buildFilterChip({
+    required String label,
+    required bool selected,
+    required VoidCallback onSelected,
+  }) {
+    return FilterChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) => onSelected(),
+      selectedColor: IncidentReportConstants.colorScheme['primary'],
+      checkmarkColor: Colors.white,
+      labelStyle: TextStyle(
+        color: selected ? Colors.white : Colors.black87,
       ),
-      child: Row(
+    );
+  }
+
+  Widget _buildDateFilterChip() {
+    return FilterChip(
+      label: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          // Select All checkbox
-          Row(
+          const Icon(Icons.calendar_today_rounded, size: 16),
+          const SizedBox(width: 4),
+          Text(
+            _selectedDate == null
+                ? "Date"
+                : DateFormat('MMM d').format(_selectedDate!),
+          ),
+        ],
+      ),
+      selected: _selectedDate != null,
+      onSelected: (_) async {
+        final pickedDate = await showDatePicker(
+          context: context,
+          initialDate: _selectedDate ?? DateTime.now(),
+          firstDate: DateTime(2000),
+          lastDate: DateTime.now(),
+        );
+        if (pickedDate != null) {
+          setState(() {
+            _selectedDate = pickedDate;
+          });
+        }
+      },
+      selectedColor: IncidentReportConstants.colorScheme['primary'],
+      checkmarkColor: Colors.white,
+    );
+  }
+
+  Widget _buildBatchActions() {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      child: Material(
+        elevation: 6,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Row(
             children: [
               Checkbox(
                 value: _selectedIncidents.length == _currentDocs.length && _currentDocs.isNotEmpty,
                 onChanged: (value) => _selectAllIncidents(),
+                activeColor: IncidentReportConstants.colorScheme['primary'],
               ),
+              const SizedBox(width: 12),
               Text(
-                'Select All',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.blue[800],
+                '${_selectedIncidents.length} selected',
+                style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 16,
                 ),
+              ),
+              const Spacer(),
+              IconButton(
+                icon: Icon(Icons.delete_rounded,
+                    color: IncidentReportConstants.colorScheme['error']),
+                onPressed: _showBatchDeleteConfirmation,
+                tooltip: 'Delete selected',
+              ),
+              PopupMenuButton<String>(
+                icon: Icon(Icons.more_vert_rounded,
+                    color: IncidentReportConstants.colorScheme['primary']),
+                itemBuilder: (context) => IncidentReportConstants.statusOptions.map((status) {
+                  final style = StyleService.getStatusStyle(status);
+                  return PopupMenuItem(
+                    value: status,
+                    child: Row(
+                      children: [
+                        Icon(style['icon'] as IconData, color: style['color'] as Color),
+                        const SizedBox(width: 12),
+                        Text(style['label'] as String),
+                      ],
+                    ),
+                  );
+                }).toList(),
+                onSelected: _batchUpdateStatus,
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmergencyList() {
+    return StreamBuilder<QuerySnapshot>(
+      stream: IncidentService.getIncidentsStream(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _buildErrorState(snapshot.error.toString());
+        }
+
+        if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
+          return _buildLoadingState();
+        }
+
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+          return _buildEmptyState();
+        }
+
+        final filteredDocs = _filterEmergencies(snapshot.data!.docs);
+        _currentDocs.clear();
+        _currentDocs.addAll(filteredDocs);
+
+        if (filteredDocs.isEmpty) {
+          return _buildEmptyState();
+        }
+
+        // Group by date for All Reports view
+        final Map<String, List<QueryDocumentSnapshot>> groupedDocs = {};
+        if (_selectedFilter == 'all') {
+          for (final doc in filteredDocs) {
+            final data = doc.data() as Map<String, dynamic>;
+            final timestamp = data['timestamp'] as Timestamp?;
+            final dateKey = timestamp != null
+                ? DateFormat('yyyy-MM-dd').format(timestamp.toDate())
+                : 'Unknown Date';
+            
+            if (!groupedDocs.containsKey(dateKey)) {
+              groupedDocs[dateKey] = [];
+            }
+            groupedDocs[dateKey]!.add(doc);
+          }
+        }
+
+        return RefreshIndicator(
+          onRefresh: _refreshData,
+          child: _selectedFilter == 'all' 
+              ? _buildGroupedList(groupedDocs)
+              : _buildRegularList(filteredDocs),
+        );
+      },
+    );
+  }
+
+  Widget _buildGroupedList(Map<String, List<QueryDocumentSnapshot>> groupedDocs) {
+    final sortedDates = groupedDocs.keys.toList()..sort((a, b) => b.compareTo(a));
+    
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.only(bottom: 16),
+      itemCount: _calculateGroupedItemCount(groupedDocs, sortedDates),
+      itemBuilder: (context, index) {
+        var currentIndex = 0;
+        
+        for (final date in sortedDates) {
+          final docs = groupedDocs[date]!;
+          
+          // Date header
+          if (index == currentIndex) {
+            return _buildDateHeader(date);
+          }
+          currentIndex++;
+          
+          // Documents for this date
+          for (int i = 0; i < docs.length; i++) {
+            if (index == currentIndex) {
+              final doc = docs[i];
+              final incident = IncidentData.fromDocument(doc);
+              
+              if (!kIsWeb) {
+                for (final url in incident.imageUrls) {
+                  if (url is String) {
+                    DefaultCacheManager().getSingleFile(url);
+                  }
+                }
+              }
+              
+              return IncidentCard(
+                incident: incident,
+                onTap: () => _showEmergencyDetails(doc),
+                userRole: widget.userRole,
+                isSelectable: _isMultiSelectMode,
+                isSelected: _selectedIncidents.contains(doc.id),
+                onSelect: () => _selectIncident(doc.id),
+                onDelete: () => _deleteIncident(doc.id),
+                showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
+              );
+            }
+            currentIndex++;
+          }
+        }
+        
+        return const SizedBox.shrink();
+      },
+    );
+  }
+
+  int _calculateGroupedItemCount(Map<String, List<QueryDocumentSnapshot>> groupedDocs, List<String> sortedDates) {
+    int count = groupedDocs.length; // Date headers
+    for (final docs in groupedDocs.values) {
+      count += docs.length; // Documents
+    }
+    return count;
+  }
+
+  Widget _buildDateHeader(String dateKey) {
+    final date = dateKey == 'Unknown Date' 
+        ? 'Unknown Date'
+        : DateFormat('MMMM d, yyyy').format(DateTime.parse(dateKey));
+    
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      margin: const EdgeInsets.only(top: 16, bottom: 8),
+      decoration: BoxDecoration(
+        color: IncidentReportConstants.colorScheme['primaryLight'],
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: IncidentReportConstants.colorScheme['secondary']!),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.calendar_today_rounded, size: 16, color: IncidentReportConstants.colorScheme['primary']),
           const SizedBox(width: 8),
           Text(
-            '${_selectedIncidents.length} selected',
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 16,
+            date,
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: IncidentReportConstants.colorScheme['primary'],
+              fontSize: 14,
             ),
           ),
           const Spacer(),
-          // Delete button
-          IconButton(
-            icon: const Icon(Icons.delete, color: Colors.red),
-            onPressed: () => _showBatchDeleteConfirmation(),
-            tooltip: 'Delete selected',
-          ),
-          // Status update dropdown
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'in progress',
-                child: Row(
-                  children: [
-                    Icon(Icons.autorenew, color: Colors.blue),
-                    SizedBox(width: 8),
-                    Text('Mark as In Progress'),
-                  ],
-                ),
-              ),
-              const PopupMenuItem(
-                value: 'resolved',
-                child: Row(
-                  children: [
-                    Icon(Icons.check_circle, color: Colors.green),
-                    SizedBox(width: 8),
-                    Text('Mark as Resolved'),
-                  ],
-                ),
-              ),
-              const PopupMenuItem(
-                value: 'under review',
-                child: Row(
-                  children: [
-                    Icon(Icons.visibility, color: Colors.purple),
-                    SizedBox(width: 8),
-                    Text('Mark as Under Review'),
-                  ],
-                ),
-              ),
-              const PopupMenuItem(
-                value: 'declined',
-                child: Row(
-                  children: [
-                    Icon(Icons.cancel, color: Colors.red),
-                    SizedBox(width: 8),
-                    Text('Decline Selected'),
-                  ],
-                ),
-              ),
-            ],
-            onSelected: _batchUpdateStatus,
+          Text(
+            _getDaySuffix(DateTime.parse(dateKey)),
+            style: TextStyle(
+              color: IncidentReportConstants.colorScheme['primaryDark'],
+              fontSize: 12,
+            ),
           ),
         ],
       ),
-    ),
-  );
-}
-void _showBatchDeleteConfirmation() async {
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('Confirm Batch Delete'),
-      content: Text('Are you sure you want to delete ${_selectedIncidents.length} incidents? This action cannot be undone.'),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          onPressed: () => Navigator.pop(context, true),
-          child: const Text(
-            'Delete',
-            style: TextStyle(color: Colors.red),
-          ),
-        ),
-      ],
-    ),
-  );
-  
-  if (confirmed != true) return;
-  
-  // Store data for potential undo
-  final incidentsToDelete = <String, Map<String, dynamic>>{};
-  for (final id in _selectedIncidents) {
-    try {
-      final docSnapshot = await FirebaseFirestore.instance
-          .collection('incidents')
-          .doc(id)
-          .get();
-      
-      if (docSnapshot.exists) {
-        incidentsToDelete[id] = docSnapshot.data()!;
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('Error getting document $id: $e');
-      }
+    );
+  }
+
+  String _getDaySuffix(DateTime date) {
+    final day = date.day;
+    if (day >= 11 && day <= 13) return '${day}th';
+    switch (day % 10) {
+      case 1: return '${day}st';
+      case 2: return '${day}nd';
+      case 3: return '${day}rd';
+      default: return '${day}th';
     }
   }
-  
-  // Delete all selected incidents
-  final batch = FirebaseFirestore.instance.batch();
-  for (final id in _selectedIncidents) {
-    final docRef = FirebaseFirestore.instance.collection('incidents').doc(id);
-    batch.delete(docRef);
-  }
-  
-  try {
-    await batch.commit();
-    
-    // Show undo snackbar
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Deleted ${_selectedIncidents.length} incidents'),
-          backgroundColor: Colors.red,
-          action: SnackBarAction(
-            label: 'UNDO',
-            textColor: Colors.white,
-            onPressed: () => _undoBatchDelete(incidentsToDelete),
-          ),
-          duration: const Duration(seconds: 5),
-        ),
-      );
-    }
-    
-    setState(() {
-      _selectedIncidents.clear();
-      _isMultiSelectMode = false;
-    });
-  } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to delete: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-}
 
-Future<void> _undoBatchDelete(Map<String, Map<String, dynamic>> incidents) async {
-  if (incidents.isEmpty) return;
-  
-  final batch = FirebaseFirestore.instance.batch();
-  
-  for (final entry in incidents.entries) {
-    final docRef = FirebaseFirestore.instance
-        .collection('incidents')
-        .doc(entry.key);
-    
-    batch.set(docRef, entry.value);
-  }
-  
-  try {
-    await batch.commit();
-    
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Incidents restored'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    }
-  } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to restore: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-}
-
-Widget _buildErrorState(String error) {
-  return Center(
-    child: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        const Icon(Icons.error_outline, size: 64, color: Colors.red),
-        const SizedBox(height: 16),
-        const Text(
-          'Something went wrong',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          error,
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.grey),
-        ),
-        const SizedBox(height: 16),
-        ElevatedButton(
-          onPressed: _refreshData,
-          child: const Text('Try Again'),
-        ),
-      ],
-    ),
-  );
-}
-
-Widget _buildEmergencyList() {
-  return StreamBuilder<QuerySnapshot>(
-    stream: FirebaseFirestore.instance
-        .collection('incidents')
-        .orderBy('timestamp', descending: true)
-        .snapshots(),
-    builder: (context, snapshot) {
-      if (snapshot.hasError) {
-        return _buildErrorState(snapshot.error.toString());
-      }
-
-      if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
-        return _buildLoadingState();
-      }
-
-      final filteredDocs = _filterEmergencies(snapshot.data!.docs);
-      _currentDocs = filteredDocs; // Store current filtered docs for select all
-
-      if (filteredDocs.isEmpty) {
-        return _buildEmptyState();
-      }
-
-      // Group by date for All Reports view
-      final Map<String, List<QueryDocumentSnapshot>> groupedDocs = {};
-      if (_selectedFilter == 'all') {
-        for (final doc in filteredDocs) {
-          final data = doc.data() as Map<String, dynamic>;
-          final timestamp = data['timestamp'] as Timestamp?;
-          final dateKey = timestamp != null
-              ? DateFormat('yyyy-MM-dd').format(timestamp.toDate())
-              : 'Unknown Date';
-          
-          if (!groupedDocs.containsKey(dateKey)) {
-            groupedDocs[dateKey] = [];
-          }
-          groupedDocs[dateKey]!.add(doc);
-        }
-      }
-
-      return RefreshIndicator(
-        onRefresh: _refreshData,
-        child: _selectedFilter == 'all' 
-            ? _buildGroupedList(groupedDocs) // Use grouped list for All Reports
-            : _buildRegularList(filteredDocs), // Use regular list for Recent
-      );
-    },
-  );
-}
-
-// New method to build list with date labels
-Widget _buildGroupedList(Map<String, List<QueryDocumentSnapshot>> groupedDocs) {
-  final sortedDates = groupedDocs.keys.toList()..sort((a, b) => b.compareTo(a));
-  
-  return ListView.builder(
-    controller: _scrollController,
-    padding: const EdgeInsets.only(bottom: 16),
-    itemCount: _calculateGroupedItemCount(groupedDocs, sortedDates),
-    itemBuilder: (context, index) {
-      var currentIndex = 0;
-      
-      for (final date in sortedDates) {
-        final docs = groupedDocs[date]!;
+  Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
+    return ListView.separated(
+      controller: _scrollController,
+      padding: const EdgeInsets.only(bottom: 16),
+      itemCount: filteredDocs.length,
+      separatorBuilder: (context, index) => const SizedBox(height: 12),
+      itemBuilder: (context, index) {
+        final doc = filteredDocs[index];
+        final incident = IncidentData.fromDocument(doc);
         
-        // Date header
-        if (index == currentIndex) {
-          return _buildDateHeader(date);
-        }
-        currentIndex++;
-        
-        // Documents for this date
-        for (int i = 0; i < docs.length; i++) {
-          if (index == currentIndex) {
-            final doc = docs[i];
-            final data = doc.data() as Map<String, dynamic>;
-            
-            if (!kIsWeb) {
-              final imageUrls = data['imageUrls'] as List<dynamic>? ?? [];
-              for (final url in imageUrls) {
-                if (url is String) {
-                  DefaultCacheManager().getSingleFile(url);
-                }
-              }
+        if (!kIsWeb) {
+          for (final url in incident.imageUrls) {
+            if (url is String) {
+              DefaultCacheManager().getSingleFile(url);
             }
-            
-            return _EmergencyCard(
-              data: data,
-              docId: doc.id,
-              onTap: () => _showEmergencyDetails(doc),
-              getStatusColor: _getStatusColor,
-              getStatusIcon: _getStatusIcon,
-              userRole: widget.userRole,
-              isSelectable: _isMultiSelectMode,
-              isSelected: _selectedIncidents.contains(doc.id),
-              onSelect: () => _selectIncident(doc.id),
-              onDelete: () => _deleteIncident(doc.id),
-              showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
-            );
-          }
-          currentIndex++;
-        }
-      }
-      
-      return const SizedBox.shrink();
-    },
-  );
-}
-
-// Helper method to calculate total item count (headers + documents)
-int _calculateGroupedItemCount(Map<String, List<QueryDocumentSnapshot>> groupedDocs, List<String> sortedDates) {
-  int count = groupedDocs.length; // Date headers
-  for (final docs in groupedDocs.values) {
-    count += docs.length; // Documents
-  }
-  return count;
-}
-
-// Method to build date header
-Widget _buildDateHeader(String dateKey) {
-  final date = dateKey == 'Unknown Date' 
-      ? 'Unknown Date'
-      : DateFormat('MMMM d, yyyy').format(DateTime.parse(dateKey));
-  
-  return Container(
-    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-    margin: const EdgeInsets.only(top: 16, bottom: 8),
-    decoration: BoxDecoration(
-      color: Colors.blue[50],
-      borderRadius: BorderRadius.circular(8),
-      border: Border.all(color: Colors.blue[100]!),
-    ),
-    child: Row(
-      children: [
-        Icon(Icons.calendar_today, size: 16, color: Colors.blue[800]),
-        const SizedBox(width: 8),
-        Text(
-          date,
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: Colors.blue[800],
-            fontSize: 14,
-          ),
-        ),
-        const Spacer(),
-        Text(
-          '${_getDaySuffix(DateTime.parse(dateKey))}',
-          style: TextStyle(
-            color: Colors.blue[600],
-            fontSize: 12,
-          ),
-        ),
-      ],
-    ),
-  );
-}
-
-// Helper method to get day suffix (st, nd, rd, th)
-String _getDaySuffix(DateTime date) {
-  final day = date.day;
-  if (day >= 11 && day <= 13) return '${day}th';
-  switch (day % 10) {
-    case 1: return '${day}st';
-    case 2: return '${day}nd';
-    case 3: return '${day}rd';
-    default: return '${day}th';
-  }
-}
-
-// Existing regular list builder (unchanged)
-Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
-  return ListView.separated(
-    controller: _scrollController,
-    padding: const EdgeInsets.only(bottom: 16),
-    itemCount: filteredDocs.length,
-    separatorBuilder: (context, index) => const SizedBox(height: 12),
-    itemBuilder: (context, index) {
-      final doc = filteredDocs[index];
-      final data = doc.data() as Map<String, dynamic>;
-      
-      if (!kIsWeb) {
-        final imageUrls = data['imageUrls'] as List<dynamic>? ?? [];
-        for (final url in imageUrls) {
-          if (url is String) {
-            DefaultCacheManager().getSingleFile(url);
           }
         }
-      }
-      
-      return _EmergencyCard(
-        data: data,
-        docId: doc.id,
-        onTap: () => _showEmergencyDetails(doc),
-        getStatusColor: _getStatusColor,
-        getStatusIcon: _getStatusIcon,
-        userRole: widget.userRole,
-        isSelectable: _isMultiSelectMode,
-        isSelected: _selectedIncidents.contains(doc.id),
-        onSelect: () => _selectIncident(doc.id),
-        onDelete: () => _deleteIncident(doc.id),
-        showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
-      );
-    },
-  );
-}
+        
+        return IncidentCard(
+          incident: incident,
+          onTap: () => _showEmergencyDetails(doc),
+          userRole: widget.userRole,
+          isSelectable: _isMultiSelectMode,
+          isSelected: _selectedIncidents.contains(doc.id),
+          onSelect: () => _selectIncident(doc.id),
+          onDelete: () => _deleteIncident(doc.id),
+          showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
+        );
+      },
+    );
+  }
+
+  Widget _buildErrorState(String error) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.error_outline_rounded,
+              size: 64, color: IncidentReportConstants.colorScheme['error']),
+          const SizedBox(height: 16),
+          const Text(
+            'Something went wrong',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            error,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.grey),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: _refreshData,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: IncidentReportConstants.colorScheme['primary'],
+            ),
+            child: const Text('Try Again', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildLoadingState() {
     return ListView.builder(
@@ -946,6 +1030,9 @@ Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
+          Icon(Icons.search_off_rounded,
+              size: 64, color: IncidentReportConstants.colorScheme['primary']),
+          const SizedBox(height: 16),
           const Text(
             'No incidents found',
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -954,7 +1041,7 @@ Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
           const Text(
             'Try adjusting your search or filters',
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey),
+            style: TextStyle(color: Colors.black),
           ),
           const SizedBox(height: 16),
           ElevatedButton(
@@ -965,7 +1052,10 @@ Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
                 _selectedDate = null;
               });
             },
-            child: const Text('Clear Filters'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: IncidentReportConstants.colorScheme['primary'],
+            ),
+            child: const Text('Clear Filters', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -974,7 +1064,7 @@ Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
 
   List<QueryDocumentSnapshot> _filterEmergencies(List<QueryDocumentSnapshot> docs) {
     final now = DateTime.now();
-    final startOfToday = DateTime(now.year, now.month, now.day); // 12:00 AM today
+    final startOfToday = DateTime(now.year, now.month, now.day);
     
     return docs.where((doc) {
       final data = doc.data() as Map<String, dynamic>;
@@ -982,7 +1072,7 @@ Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
       final type = (data['incidentType'] ?? '').toString().toLowerCase();
       final timestamp = data['timestamp'] as Timestamp?;
       
-      // Apply time filter - changed from 24 hours to today (from 12:00 AM)
+      // Apply time filter
       if (_selectedFilter == 'recent' && timestamp != null) {
         final reportTime = timestamp.toDate();
         if (reportTime.isBefore(startOfToday)) {
@@ -1006,72 +1096,44 @@ Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
   }
 
   void _showEmergencyDetails(QueryDocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
-    final timestamp = data['timestamp'] as Timestamp?;
-    final statusOptions = ['pending', 'in progress', 'resolved', 'under review', 'declined'];
-    final imageUrls = data['imageUrls'] as List<dynamic>? ?? [];
-    
-    String currentStatus = (data['status'] ?? 'pending').toString().toLowerCase();
-    if (!statusOptions.contains(currentStatus)) {
-      currentStatus = 'pending';
-    }
-    
-    final statusUpdates = data['statusUpdates'] as List<dynamic>? ?? [];
+    final incident = IncidentData.fromDocument(doc);
 
     if (kIsWeb) {
-      // Web-optimized modal with larger width
       showDialog(
         context: context,
         builder: (context) => Dialog(
           insetPadding: const EdgeInsets.all(40),
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width * 1.85,
+              maxWidth: MediaQuery.of(context).size.width * 0.85,
               maxHeight: MediaQuery.of(context).size.height * 0.9,
             ),
-            child: _EmergencyDetailsModal(
-              data: data,
-              timestamp: timestamp,
-              currentStatus: currentStatus,
-              statusOptions: statusOptions,
-              statusUpdates: statusUpdates,
-              imageUrls: imageUrls,
-              getStatusColor: _getStatusColor,
-              getStatusIcon: _getStatusIcon,
+            child: IncidentDetailsModal(
+              incident: incident,
               userRole: widget.userRole,
               onStatusUpdated: () {
                 setState(() {
                   _hasNewUpdates = true;
                 });
               },
-              docId: doc.id,
               isWeb: true,
             ),
           ),
         ),
       );
     } else {
-      // Mobile modal
       showModalBottomSheet(
         context: context,
         isScrollControlled: true,
         backgroundColor: Colors.transparent,
-        builder: (context) => _EmergencyDetailsModal(
-          data: data,
-          timestamp: timestamp,
-          currentStatus: currentStatus,
-          statusOptions: statusOptions,
-          statusUpdates: statusUpdates,
-          imageUrls: imageUrls,
-          getStatusColor: _getStatusColor,
-          getStatusIcon: _getStatusIcon,
+        builder: (context) => IncidentDetailsModal(
+          incident: incident,
           userRole: widget.userRole,
           onStatusUpdated: () {
             setState(() {
               _hasNewUpdates = true;
             });
           },
-          docId: doc.id,
           isWeb: false,
         ),
       );
@@ -1082,70 +1144,351 @@ Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
     if (_isMultiSelectMode && _selectedIncidents.isNotEmpty) {
       return FloatingActionButton(
         onPressed: () => _batchUpdateStatus('in progress'),
-        backgroundColor: Colors.blue,
-        child: const Icon(Icons.check, color: Colors.white),
+        backgroundColor: IncidentReportConstants.colorScheme['primary'],
+        child: const Icon(Icons.check_rounded, color: Colors.white),
       );
     }
-    
+
     return FloatingActionButton(
       onPressed: _refreshData,
-      backgroundColor: Colors.blue,
-      child: const Icon(Icons.refresh, color: Colors.white),
+      backgroundColor: IncidentReportConstants.colorScheme['primary'],
+      child: const Icon(Icons.refresh_rounded, color: Colors.white),
     );
   }
 
-  Color _getIncidentColor(String? incidentType) {
-    switch (incidentType?.toLowerCase()) {
-      case 'fire':
-        return const Color(0xFFF44336);
-      case 'accident':
-        return const Color(0xFFFF9800);
-      case 'flood':
-        return const Color(0xFF2196F3);
-      case 'medical':
-        return const Color(0xFFE91E63);
-      case 'crime':
-        return const Color(0xFF9C27B0);
-      default:
-        return const Color(0xFF607D8B);
-    }
+  // Utility Methods
+  Future<bool?> _showConfirmationDialog({
+    required String title,
+    required String content,
+    String confirmText = 'Confirm',
+    Color? confirmColor,
+  }) async {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(content),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: confirmColor ?? IncidentReportConstants.colorScheme['primary'],
+            ),
+            child: Text(confirmText, style: const TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSuccessSnackbar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: IncidentReportConstants.colorScheme['success'],
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+    );
+  }
+
+  void _showErrorSnackbar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: IncidentReportConstants.colorScheme['error'],
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+    );
+  }
+
+  Future<void> _refreshData() async {
+    setState(() {
+      _isLoading = true;
+      _hasNewUpdates = false;
+    });
+
+    await Future.delayed(const Duration(seconds: 1));
+
+    setState(() {
+      _isLoading = false;
+    });
   }
 }
 
-class _EmergencyDetailsModal extends StatefulWidget {
-  final Map<String, dynamic> data;
-  final Timestamp? timestamp;
-  final String currentStatus;
-  final List<String> statusOptions;
-  final List<dynamic> statusUpdates;
-  final List<dynamic> imageUrls;
-  final Color Function(String) getStatusColor;
-  final IconData Function(String) getStatusIcon;
+// Incident Card Widget
+class IncidentCard extends StatelessWidget {
+  final IncidentData incident;
+  final VoidCallback onTap;
   final String userRole;
-  final VoidCallback onStatusUpdated;
-  final String docId;
-  final bool isWeb;
+  final bool isSelectable;
+  final bool isSelected;
+  final VoidCallback onSelect;
+  final VoidCallback? onDelete;
+  final bool showDeleteButton;
 
-  const _EmergencyDetailsModal({
-    required this.data,
-    required this.timestamp,
-    required this.currentStatus,
-    required this.statusOptions,
-    required this.statusUpdates,
-    required this.imageUrls,
-    required this.getStatusColor,
-    required this.getStatusIcon,
+  const IncidentCard({
+    super.key,
+    required this.incident,
+    required this.onTap,
     required this.userRole,
-    required this.onStatusUpdated,
-    required this.docId,
-    this.isWeb = false,
+    required this.isSelectable,
+    required this.isSelected,
+    required this.onSelect,
+    this.onDelete,
+    this.showDeleteButton = false,
   });
 
   @override
-  _EmergencyDetailsModalState createState() => _EmergencyDetailsModalState();
+  Widget build(BuildContext context) {
+    final incidentStyle = StyleService.getIncidentStyle(incident.incidentType);
+    final statusStyle = StyleService.getStatusStyle(incident.status);
+    final hasImages = incident.imageUrls.isNotEmpty;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: isSelectable ? onSelect : onTap,
+      onLongPress: userRole == 'admin' ? onSelect : null,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: isSelected ? (incidentStyle['color'] as Color).withOpacity(0.05) : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: isSelected ? Border.all(color: incidentStyle['color'] as Color, width: 2) : null,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            /// INCIDENT HEADER
+            Row(
+              children: [
+                if (isSelectable)
+                  _buildSelectionIndicator(incidentStyle['color'] as Color)
+                else
+                  _buildIncidentIcon(incidentStyle),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    (incident.incidentType ?? 'Unknown type').toUpperCase(),
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: incidentStyle['color'] as Color,
+                    ),
+                  ),
+                ),
+                _buildStatusBadge(statusStyle),
+                if (showDeleteButton && !isSelectable) ...[
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.delete_rounded, size: 20),
+                    color: IncidentReportConstants.colorScheme['error'],
+                    onPressed: () => _showDeleteConfirmation(context, onDelete),
+                    tooltip: 'Delete Incident',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ],
+            ),
+
+            const SizedBox(height: 12),
+
+            /// LOCATION
+            Row(
+              children: [
+                Icon(Icons.location_on_rounded, size: 16, color: Colors.blueGrey.shade700),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    incident.address ?? 'Unknown location',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.blueGrey.shade800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 6),
+
+            /// REPORTER + TIME
+            Row(
+              children: [
+                Icon(Icons.person_rounded, size: 16, color: Colors.blueGrey.shade700),
+                const SizedBox(width: 6),
+                Text(
+                  incident.name ?? 'Anonymous',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.blueGrey.shade700,
+                  ),
+                ),
+                const Spacer(),
+                if (hasImages) ...[
+                  Icon(Icons.image_rounded, size: 16, color: Colors.blueGrey.shade700),
+                  const SizedBox(width: 4),
+                ],
+                Text(
+                  incident.timestamp != null
+                      ? DateFormat('MMM d, h:mm a').format(incident.timestamp!.toDate())
+                      : 'Unknown time',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.blueGrey.shade600,
+                  ),
+                ),
+              ],
+            ),
+
+            if (userRole == 'admin') ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: IncidentReportConstants.colorScheme['primaryLight'],
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: IncidentReportConstants.colorScheme['secondary']!),
+                ),
+                child: Text(
+                  'ADMIN VIEW',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: IncidentReportConstants.colorScheme['primaryDark'],
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSelectionIndicator(Color color) {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: isSelected ? color : Colors.transparent,
+        shape: BoxShape.circle,
+        border: Border.all(color: isSelected ? color : Colors.grey.shade400),
+      ),
+      child: Icon(
+        isSelected ? Icons.check_rounded : Icons.circle_outlined,
+        size: 20,
+        color: isSelected ? Colors.white : Colors.grey.shade400,
+      ),
+    );
+  }
+
+  Widget _buildIncidentIcon(Map<String, dynamic> incidentStyle) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        gradient: incidentStyle['gradient'] as Gradient,
+        shape: BoxShape.circle,
+      ),
+      child: Icon(
+        incidentStyle['icon'] as IconData,
+        color: Colors.white,
+        size: 20,
+      ),
+    );
+  }
+
+  Widget _buildStatusBadge(Map<String, dynamic> statusStyle) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: statusStyle['bgColor'] as Color,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(statusStyle['icon'] as IconData, size: 14, color: statusStyle['color'] as Color),
+          const SizedBox(width: 4),
+          Text(
+            (statusStyle['label'] as String).toUpperCase(),
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: statusStyle['color'] as Color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDeleteConfirmation(BuildContext context, VoidCallback? onDelete) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text("Confirm Delete"),
+          content: const Text("Are you sure you want to delete this incident report? This action cannot be undone."),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text("Cancel"),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                if (onDelete != null) {
+                  onDelete();
+                }
+              },
+              child: Text(
+                "Delete",
+                style: TextStyle(color: IncidentReportConstants.colorScheme['error']),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
 }
 
-class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
+// Incident Details Modal
+class IncidentDetailsModal extends StatefulWidget {
+  final IncidentData incident;
+  final String userRole;
+  final VoidCallback onStatusUpdated;
+  final bool isWeb;
+
+  const IncidentDetailsModal({
+    super.key,
+    required this.incident,
+    required this.userRole,
+    required this.onStatusUpdated,
+    required this.isWeb,
+  });
+
+  @override
+  State<IncidentDetailsModal> createState() => _IncidentDetailsModalState();
+}
+
+class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
   late String _selectedStatus;
   final TextEditingController _noteController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
@@ -1154,12 +1497,12 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
   @override
   void initState() {
     super.initState();
-    _selectedStatus = widget.currentStatus;
+    _selectedStatus = widget.incident.status;
     _preloadImages();
   }
 
   Future<void> _preloadImages() async {
-    for (final imageUrl in widget.imageUrls) {
+    for (final imageUrl in widget.incident.imageUrls) {
       if (imageUrl is String && imageUrl.isNotEmpty) {
         _loadImageForWeb(imageUrl);
       }
@@ -1169,10 +1512,10 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
   Future<void> _loadImageForWeb(String imageUrl) async {
     try {
       if (_imageCache.containsKey(imageUrl)) return;
-      
+
       final ref = FirebaseStorage.instance.refFromURL(imageUrl);
       final imageData = await ref.getData();
-      
+
       setState(() {
         _imageCache[imageUrl] = imageData;
       });
@@ -1216,7 +1559,7 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
                       color: Colors.black54,
                       borderRadius: BorderRadius.circular(20),
                     ),
-                    child: const Icon(Icons.close, color: Colors.white, size: 24),
+                    child: const Icon(Icons.close_rounded, color: Colors.white, size: 24),
                   ),
                   onPressed: () => Navigator.of(context).pop(),
                 ),
@@ -1228,9 +1571,274 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
     );
   }
 
+  @override
+  Widget build(BuildContext context) {
+    if (widget.isWeb) {
+      return _buildWebLayout();
+    } else {
+      return _buildMobileLayout();
+    }
+  }
+
+  Widget _buildWebLayout() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 20,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          _buildHeader(),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: _buildIncidentDetails(),
+                  ),
+                  const SizedBox(width: 24),
+                  Expanded(
+                    flex: 1,
+                    child: _buildStatusSection(),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileLayout() {
+    return Container(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.9,
+      ),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Drag handle
+          Container(
+            width: 60,
+            height: 6,
+            margin: const EdgeInsets.only(top: 12, bottom: 8),
+            decoration: BoxDecoration(
+              color: Colors.grey[400],
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ),
+          _buildHeader(),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildIncidentDetails(),
+                  const SizedBox(height: 24),
+                  _buildStatusSection(),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: IncidentReportConstants.colorScheme['primary'],
+        borderRadius: widget.isWeb
+            ? const BorderRadius.only(
+                topLeft: Radius.circular(20),
+                topRight: Radius.circular(20),
+              )
+            : null,
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded, size: 32, color: Colors.white),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Text(
+              'INCIDENT DETAILS',
+              style: TextStyle(
+                fontSize: widget.isWeb ? 24 : 20,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close_rounded, color: Colors.white),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIncidentDetails() {
+    final incidentStyle = StyleService.getIncidentStyle(widget.incident.incidentType);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            gradient: incidentStyle['gradient'] as Gradient,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  incidentStyle['icon'] as IconData,
+                  color: Colors.white,
+                  size: 32,
+                ),
+              ),
+              const SizedBox(width: 20),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      (widget.incident.incidentType ?? 'Unknown type').toUpperCase(),
+                      style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      widget.incident.address ?? 'Unknown location',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.white.withOpacity(0.9),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        _buildDetailSection(
+          icon: Icons.location_on_rounded,
+          title: 'Location',
+          content: widget.incident.address ?? 'Unknown location',
+        ),
+        _buildDetailSection(
+          icon: Icons.access_time_rounded,
+          title: 'Reported',
+          content: widget.incident.timestamp != null
+              ? DateFormat('MMMM d, y - h:mm a').format(widget.incident.timestamp!.toDate())
+              : 'Unknown time',
+        ),
+        if (widget.incident.contactNumber != null)
+          _buildDetailSection(
+            icon: Icons.phone_rounded,
+            title: 'Contact',
+            content: widget.incident.contactNumber!,
+          ),
+        _buildDetailSection(
+          icon: Icons.person_rounded,
+          title: 'Reporter',
+          content: widget.incident.name ?? 'Anonymous',
+        ),
+        if (widget.incident.description != null)
+          _buildDetailSection(
+            icon: Icons.description_rounded,
+            title: 'Description',
+            content: widget.incident.description!,
+            isDescription: true,
+          ),
+        if (widget.incident.imageUrls.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          _buildImagesSection(),
+        ],
+        if (widget.incident.statusUpdates.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          _buildStatusTimeline(),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildDetailSection({
+    required IconData icon,
+    required String title,
+    required String content,
+    bool isDescription = false,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: IncidentReportConstants.colorScheme['primary']),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title.toUpperCase(),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.grey[600],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  content,
+                  style: TextStyle(
+                    fontSize: isDescription ? 15 : 16,
+                    color: Colors.black87,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildImagesSection() {
-    if (widget.imageUrls.isEmpty) return const SizedBox();
-    
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1238,8 +1846,8 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
           'ATTACHED IMAGES',
           style: TextStyle(
             fontSize: 16,
-            fontWeight: FontWeight.bold,
-            color: Colors.grey[700],
+            fontWeight: FontWeight.w700,
+            color: IncidentReportConstants.colorScheme['primaryDark'],
           ),
         ),
         const SizedBox(height: 12),
@@ -1247,15 +1855,15 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
           height: 120,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
-            itemCount: widget.imageUrls.length,
+            itemCount: widget.incident.imageUrls.length,
             itemBuilder: (context, index) {
-              final imageUrl = widget.imageUrls[index]?.toString() ?? '';
+              final imageUrl = widget.incident.imageUrls[index]?.toString() ?? '';
               final imageData = _imageCache[imageUrl];
-              
+
               return Container(
                 margin: const EdgeInsets.only(right: 12),
                 child: Material(
-                  elevation: 2,
+                  elevation: 4,
                   borderRadius: BorderRadius.circular(12),
                   child: GestureDetector(
                     onTap: () => _showImagePreview(imageUrl),
@@ -1295,349 +1903,10 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
         return Container(
           color: Colors.grey[300],
           child: const Center(
-            child: Icon(Icons.broken_image, color: Colors.grey, size: 40),
+            child: Icon(Icons.broken_image_rounded, color: Colors.grey, size: 40),
           ),
         );
       },
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (widget.isWeb) {
-      return _buildWebLayout();
-    } else {
-      return _buildMobileLayout();
-    }
-  }
-
-  Widget _buildWebLayout() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.2),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          // Header
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: Colors.blue[800],
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(16),
-                topRight: Radius.circular(16),
-              ),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.warning_amber_rounded, size: 32, color: Colors.white),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Text(
-                    'INCIDENT DETAILS',
-                    style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close, size: 28, color: Colors.white),
-                  onPressed: () => Navigator.pop(context),
-                ),
-              ],
-            ),
-          ),
-          
-          // Content
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(32),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Left column - Incident details
-                  Expanded(
-                    flex: 3,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _buildDetailCard(),
-                        const SizedBox(height: 32),
-                        
-                        // Details sections
-                        _buildDetailSection(
-                          icon: Icons.location_on,
-                          title: 'Location',
-                          content: widget.data['address']?.toString() ?? 'Unknown location',
-                        ),
-                        
-                        _buildDetailSection(
-                          icon: Icons.access_time,
-                          title: 'Reported',
-                          content: widget.timestamp != null
-                              ? DateFormat('MMMM d, y - h:mm a')
-                                  .format(widget.timestamp!.toDate())
-                              : 'Unknown time',
-                        ),
-                        
-                        _buildDetailSection(
-                          icon: Icons.phone,
-                          title: 'Contact',
-                          content: widget.data['contactNumber']?.toString() ?? 'Not provided',
-                        ),
-                        
-                        _buildDetailSection(
-                          icon: Icons.person,
-                          title: 'Reporter',
-                          content: widget.data['name']?.toString() ?? 'Anonymous',
-                        ),
-                        
-                        if (widget.data['description'] != null) ...[
-                          const SizedBox(height: 24),
-                          _buildDetailSection(
-                            icon: Icons.description,
-                            title: 'Description',
-                            content: widget.data['description']!.toString(),
-                            isDescription: true,
-                          ),
-                        ],
-                        
-                        // Images section
-                        if (widget.imageUrls.isNotEmpty) ...[
-                          const SizedBox(height: 32),
-                          _buildImagesSection(),
-                        ],
-                      ],
-                    ),
-                  ),
-                  
-                  const SizedBox(width: 32),
-                  
-                  // Right column - Status and updates
-                  Expanded(
-                    flex: 2,
-                    child: Column(
-                      children: [
-                        // Status timeline
-                        if (widget.statusUpdates.isNotEmpty) ...[
-                          _buildStatusTimeline(),
-                          const SizedBox(height: 32),
-                        ],
-                        
-                        // Admin section or user view
-                        widget.userRole == 'admin' 
-                            ? _buildAdminSection()
-                            : _buildUserSection(),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMobileLayout() {
-    return Container(
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.9,
-      ),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Drag handle
-          Container(
-            width: 60,
-            height: 6,
-            margin: const EdgeInsets.only(top: 12, bottom: 8),
-            decoration: BoxDecoration(
-              color: Colors.grey[400],
-              borderRadius: BorderRadius.circular(3),
-            ),
-          ),
-          
-          // Header
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-            child: Row(
-              children: [
-                Text(
-                  'Incident Details',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.blue[800],
-                  ),
-                ),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.pop(context),
-                ),
-              ],
-            ),
-          ),
-          
-          const Divider(height: 1),
-          
-          // Content
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildDetailCard(),
-                  const SizedBox(height: 24),
-                  
-                  // Status timeline
-                  if (widget.statusUpdates.isNotEmpty) ...[
-                    _buildStatusTimeline(),
-                    const SizedBox(height: 24),
-                  ],
-                  
-                  // Details sections
-                  _buildDetailSection(
-                    icon: Icons.location_on,
-                    title: 'Location',
-                    content: widget.data['address']?.toString() ?? 'Unknown location',
-                  ),
-                  
-                  _buildDetailSection(
-                    icon: Icons.access_time,
-                    title: 'Reported',
-                    content: widget.timestamp != null
-                        ? DateFormat('MMMM d, y - h:mm a')
-                            .format(widget.timestamp!.toDate())
-                        : 'Unknown time',
-                  ),
-                  
-                  _buildDetailSection(
-                    icon: Icons.phone,
-                    title: 'Contact',
-                    content: widget.data['contactNumber']?.toString() ?? 'Not provided',
-                  ),
-                  
-                  _buildDetailSection(
-                    icon: Icons.person,
-                    title: 'Reporter',
-                    content: widget.data['name']?.toString() ?? 'Anonymous',
-                  ),
-                  
-                  if (widget.data['description'] != null) ...[
-                    const SizedBox(height: 16),
-                    _buildDetailSection(
-                      icon: Icons.description,
-                      title: 'Description',
-                      content: widget.data['description']!.toString(),
-                      isDescription: true,
-                    ),
-                  ],
-                  
-                  // Images section
-                  if (widget.imageUrls.isNotEmpty) ...[
-                    const SizedBox(height: 24),
-                    _buildImagesSection(),
-                  ],
-                  
-                  // Admin section or user view
-                  const SizedBox(height: 24),
-                  widget.userRole == 'admin' 
-                      ? _buildAdminSection()
-                      : _buildUserSection(),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDetailCard() {
-    final incidentType = widget.data['incidentType']?.toString() ?? 'Unknown type';
-    final iconColor = _getIncidentColor(incidentType);
-    
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.blue[50],
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.blue[100]!, width: 2),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.blue[100]!.withOpacity(0.3),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: iconColor.withOpacity(0.2),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              Icons.warning_amber_rounded,
-              color: iconColor,
-              size: 32,
-            ),
-          ),
-          const SizedBox(width: 20),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  incidentType.toUpperCase(),
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: iconColor,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  widget.data['address']?.toString() ?? 'Unknown location',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    color: Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                if (widget.timestamp != null)
-                  Text(
-                    DateFormat('MMM d, y - h:mm a').format(widget.timestamp!.toDate()),
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey[600],
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -1649,12 +1918,12 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
           'STATUS HISTORY',
           style: TextStyle(
             fontSize: 16,
-            fontWeight: FontWeight.bold,
-            color: Colors.grey[700],
+            fontWeight: FontWeight.w700,
+            color: IncidentReportConstants.colorScheme['primaryDark'],
           ),
         ),
         const SizedBox(height: 16),
-        ...widget.statusUpdates.reversed.map((update) {
+        ...widget.incident.statusUpdates.reversed.map((update) {
           final status = update['status']?.toString() ?? '';
           final note = update['note']?.toString() ?? '';
           final timestamp = update['timestamp'];
@@ -1667,6 +1936,8 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
           final timeString = time != null 
               ? DateFormat('MMM d, h:mm a').format(time)
               : 'Unknown time';
+          
+          final statusStyle = StyleService.getStatusStyle(status);
           
           return Container(
             margin: const EdgeInsets.only(bottom: 16),
@@ -1689,12 +1960,12 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
                 Container(
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: widget.getStatusColor(status).withOpacity(0.1),
+                    color: statusStyle['bgColor'] as Color,
                     shape: BoxShape.circle,
                   ),
                   child: Icon(
-                    widget.getStatusIcon(status),
-                    color: widget.getStatusColor(status),
+                    statusStyle['icon'] as IconData,
+                    color: statusStyle['color'] as Color,
                     size: 20,
                   ),
                 ),
@@ -1706,8 +1977,8 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
                       Text(
                         status.toUpperCase(),
                         style: TextStyle(
-                          color: widget.getStatusColor(status),
-                          fontWeight: FontWeight.bold,
+                          color: statusStyle['color'] as Color,
+                          fontWeight: FontWeight.w700,
                           fontSize: 16,
                         ),
                       ),
@@ -1740,69 +2011,20 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
     );
   }
 
-  Widget _buildDetailSection({
-    required IconData icon,
-    required String title,
-    required String content,
-    bool isDescription = false,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 20),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.grey[50],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.blue[100],
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, size: 20, color: Colors.blue[800]),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title.toUpperCase(),
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.grey[600],
-                    letterSpacing: 1,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  content,
-                  style: TextStyle(
-                    fontSize: isDescription ? 15 : 16,
-                    color: Colors.black87,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
+  Widget _buildStatusSection() {
+    if (widget.userRole == 'admin') {
+      return _buildAdminStatusSection();
+    } else {
+      return _buildUserStatusSection();
+    }
   }
 
-
-  Widget _buildAdminSection() {
+  Widget _buildAdminStatusSection() {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Colors.grey[50],
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade300),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1811,79 +2033,64 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
             'UPDATE STATUS',
             style: TextStyle(
               fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: Colors.grey[700],
+              fontWeight: FontWeight.w700,
+              color: IncidentReportConstants.colorScheme['primaryDark'],
             ),
           ),
           const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey.shade300),
-            ),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                value: _selectedStatus,
-                icon: const Icon(Icons.keyboard_arrow_down),
-                isExpanded: true,
-                style: TextStyle(
-                  color: widget.getStatusColor(_selectedStatus),
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
+          DropdownButtonFormField<String>(
+            value: _selectedStatus,
+            items: IncidentReportConstants.statusOptions.map((status) {
+              final style = StyleService.getStatusStyle(status);
+              return DropdownMenuItem(
+                value: status,
+                child: Row(
+                  children: [
+                    Icon(style['icon'] as IconData, color: style['color'] as Color),
+                    const SizedBox(width: 12),
+                    Text(style['label'] as String),
+                  ],
                 ),
-                onChanged: (value) async {
-                  if (value != null && value != _selectedStatus) {
-                    if (value == 'declined') {
-                      final confirmed = await showDialog<bool>(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          title: const Text('Confirm Decline'),
-                          content: const Text('Are you sure you want to decline this incident? This action cannot be undone.'),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(context, false),
-                              child: const Text('Cancel'),
-                            ),
-                            TextButton(
-                              onPressed: () => Navigator.pop(context, true),
-                              child: const Text('Decline', style: TextStyle(color: Colors.red)),
-                            ),
-                          ],
+              );
+            }).toList(),
+            onChanged: (value) async {
+              if (value != null && value != _selectedStatus) {
+                if (value == 'declined') {
+                  final confirmed = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('Confirm Decline'),
+                      content: const Text('Are you sure you want to decline this incident? This action cannot be undone.'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('Cancel'),
                         ),
-                      );
-                      
-                      if (confirmed != true) {
-                        return;
-                      }
-                    }
-                    
-                    setState(() {
-                      _selectedStatus = value;
-                    });
-                  }
-                },
-                items: widget.statusOptions.map((status) {
-                  return DropdownMenuItem<String>(
-                    value: status,
-                    child: Row(
-                      children: [
-                        Icon(
-                          widget.getStatusIcon(status),
-                          color: widget.getStatusColor(status),
-                          size: 20,
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: Text('Decline', style: TextStyle(color: IncidentReportConstants.colorScheme['error'])),
                         ),
-                        const SizedBox(width: 12),
-                        Text(status.toUpperCase()),
                       ],
                     ),
                   );
-                }).toList(),
-              ),
+                  
+                  if (confirmed != true) {
+                    return;
+                  }
+                }
+                
+                setState(() {
+                  _selectedStatus = value;
+                });
+              }
+            },
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              filled: true,
+              fillColor: Colors.white,
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           Form(
             key: _formKey,
             child: Column(
@@ -1893,7 +2100,7 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
                   'ADD NOTE',
                   style: TextStyle(
                     fontSize: 14,
-                    fontWeight: FontWeight.bold,
+                    fontWeight: FontWeight.w700,
                     color: Colors.grey[600],
                   ),
                 ),
@@ -1901,13 +2108,9 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
                 TextFormField(
                   controller: _noteController,
                   maxLines: 3,
-                  decoration: InputDecoration(
+                  decoration: const InputDecoration(
                     hintText: "Add a note about this update...",
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: Colors.grey.shade400),
-                    ),
-                    contentPadding: const EdgeInsets.all(16),
+                    border: OutlineInputBorder(),
                     filled: true,
                     fillColor: Colors.white,
                   ),
@@ -1921,79 +2124,16 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
               ],
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
+              onPressed: _updateStatus,
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue[800],
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 18),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                elevation: 2,
+                backgroundColor: IncidentReportConstants.colorScheme['primary'],
+                padding: const EdgeInsets.symmetric(vertical: 16),
               ),
-              onPressed: () async {
-                if (_formKey.currentState!.validate()) {
-                  final note = _noteController.text.trim();
-                  
-                  try {
-                    final docSnapshot = await FirebaseFirestore.instance
-                        .collection('incidents')
-                        .doc(widget.docId)
-                        .get();
-
-                    if (!docSnapshot.exists) {
-                      throw Exception("Document does not exist");
-                    }
-
-                    final currentData = docSnapshot.data() as Map<String, dynamic>;
-                    final currentUpdates = List<Map<String, dynamic>>.from(
-                      currentData['statusUpdates'] ?? []
-                    );
-
-                    final newStatusUpdate = {
-                      'status': _selectedStatus,
-                      'timestamp': Timestamp.now(),
-                      'note': note,
-                      'updatedBy': 'Admin',
-                    };
-
-                    currentUpdates.add(newStatusUpdate);
-
-                    await FirebaseFirestore.instance
-                        .collection('incidents')
-                        .doc(widget.docId)
-                        .update({
-                          'status': _selectedStatus,
-                          'statusUpdates': currentUpdates,
-                          'lastUpdated': FieldValue.serverTimestamp(),
-                        });
-
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text("Status updated successfully!"),
-                        backgroundColor: Colors.green,
-                      ),
-                    );
-
-                    widget.onStatusUpdated();
-                    Navigator.pop(context);
-                  } catch (e) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('Failed to update status: $e'),
-                        backgroundColor: Colors.red,
-                      ),
-                    );
-                  }
-                }
-              },
-              child: const Text(
-                'SAVE UPDATE',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
+              child: const Text('SAVE UPDATE', style: TextStyle(color: Colors.white)),
             ),
           ),
         ],
@@ -2001,13 +2141,14 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
     );
   }
 
-  Widget _buildUserSection() {
+  Widget _buildUserStatusSection() {
+    final statusStyle = StyleService.getStatusStyle(widget.incident.status);
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Colors.grey[50],
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade300),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2016,34 +2157,27 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
             'CURRENT STATUS',
             style: TextStyle(
               fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: Colors.grey[700],
+              fontWeight: FontWeight.w700,
+              color: IncidentReportConstants.colorScheme['primaryDark'],
             ),
           ),
           const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: widget.getStatusColor(widget.currentStatus).withOpacity(0.1),
+              color: statusStyle['bgColor'] as Color,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: widget.getStatusColor(widget.currentStatus),
-                width: 2,
-              ),
+              border: Border.all(color: statusStyle['color'] as Color, width: 2),
             ),
             child: Row(
               children: [
-                Icon(
-                  widget.getStatusIcon(widget.currentStatus),
-                  color: widget.getStatusColor(widget.currentStatus),
-                  size: 32,
-                ),
+                Icon(statusStyle['icon'] as IconData, color: statusStyle['color'] as Color, size: 32),
                 const SizedBox(width: 16),
                 Text(
-                  widget.currentStatus.toUpperCase(),
+                  (statusStyle['label'] as String).toUpperCase(),
                   style: TextStyle(
-                    color: widget.getStatusColor(widget.currentStatus),
-                    fontWeight: FontWeight.bold,
+                    color: statusStyle['color'] as Color,
+                    fontWeight: FontWeight.w700,
                     fontSize: 20,
                   ),
                 ),
@@ -2055,286 +2189,38 @@ class _EmergencyDetailsModalState extends State<_EmergencyDetailsModal> {
     );
   }
 
-  Color _getIncidentColor(String? incidentType) {
-    switch (incidentType?.toLowerCase()) {
-      case 'fire':
-        return const Color(0xFFF44336);
-      case 'accident':
-        return const Color(0xFFFF9800);
-      case 'flood':
-        return const Color(0xFF2196F3);
-      case 'medical':
-        return const Color(0xFFE91E63);
-      case 'crime':
-        return const Color(0xFF9C27B0);
-      default:
-        return const Color(0xFF607D8B);
-    }
-  }
-}
+  Future<void> _updateStatus() async {
+    if (_formKey.currentState!.validate()) {
+      final note = _noteController.text.trim();
+      
+      try {
+        await IncidentService.updateIncidentStatus(
+          widget.incident.id,
+          status: _selectedStatus,
+          note: note,
+          updatedBy: 'Admin',
+        );
 
-class _EmergencyCard extends StatelessWidget {
-  final Map<String, dynamic> data;
-  final String docId;
-  final VoidCallback onTap;
-  final Color Function(String) getStatusColor;
-  final IconData Function(String) getStatusIcon;
-  final String userRole;
-  final bool isSelectable;
-  final bool isSelected;
-  final VoidCallback onSelect;
-  final VoidCallback? onDelete;
-  final bool showDeleteButton;
-
-  const _EmergencyCard({
-    required this.data,
-    required this.docId,
-    required this.onTap,
-    required this.getStatusColor,
-    required this.getStatusIcon,
-    required this.userRole,
-    this.isSelectable = false,
-    this.isSelected = false,
-    required this.onSelect,
-    this.onDelete,
-    this.showDeleteButton = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final timestamp = data['timestamp'] as Timestamp?;
-    final time = timestamp != null
-        ? DateFormat('MMM d, h:mm a').format(timestamp.toDate())
-        : 'Unknown time';
-
-    final location = data['address']?.toString() ?? 'Unknown location';
-    final incidentType = data['incidentType']?.toString() ?? 'Unknown type';
-    final reporter = data['name']?.toString() ?? 'Anonymous';
-    final status = data['status']?.toString() ?? 'pending';
-    final iconColor = _getIncidentColor(data['incidentType']);
-    final hasImages = (data['imageUrls'] as List<dynamic>? ?? []).isNotEmpty;
-
-    return InkWell(
-      borderRadius: BorderRadius.circular(16),
-      onTap: isSelectable ? onSelect : onTap,
-      onLongPress: () {
-        if (userRole == 'admin') {
-          onSelect();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Status updated successfully!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+          widget.onStatusUpdated();
+          Navigator.pop(context);
         }
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isSelected ? Colors.blue[50] : Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: isSelected ? Border.all(color: Colors.blue, width: 2) : null,
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.1),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to update status: $e'),
+              backgroundColor: Colors.red,
             ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            /// INCIDENT HEADER
-            Row(
-              children: [
-                if (isSelectable)
-                  Icon(
-                    isSelected ? Icons.check_circle : Icons.radio_button_unchecked,
-                    color: isSelected ? Colors.blue : Colors.grey,
-                  )
-                else
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: iconColor.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      Icons.warning_amber_rounded,
-                      color: iconColor,
-                      size: 20,
-                    ),
-                  ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    incidentType,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-
-                // Status label
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: getStatusColor(status).withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: getStatusColor(status),
-                      width: 1,
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        getStatusIcon(status),
-                        size: 14,
-                        color: getStatusColor(status),
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        status.toUpperCase(),
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          color: getStatusColor(status),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                // Delete button (only admin, all reports, not selectable mode)
-                if (showDeleteButton && !isSelectable) ...[
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.delete, size: 20),
-                    color: Colors.red,
-                    onPressed: () => _showDeleteConfirmation(context, docId, onDelete),
-                    tooltip: 'Delete Incident',
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                  ),
-                ],
-              ],
-            ),
-
-            const SizedBox(height: 12),
-
-            /// LOCATION
-            Row(
-              children: [
-                Icon(Icons.location_on, size: 16, color: Colors.blue[700]),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    location,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey[800],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 6),
-
-            /// REPORTER + TIME
-            Row(
-              children: [
-                Icon(Icons.person, size: 16, color: Colors.blue[700]),
-                const SizedBox(width: 6),
-                Text(
-                  reporter,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Colors.grey[700],
-                  ),
-                ),
-                const Spacer(),
-                if (hasImages) ...[
-                  Icon(Icons.image, size: 16, color: Colors.blue[700]),
-                  const SizedBox(width: 4),
-                ],
-                Text(
-                  time,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey[600],
-                  ),
-                ),
-              ],
-            ),
-
-            if (userRole == 'admin') ...[
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.blue[50],
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: Colors.blue[200]!),
-                ),
-                child: Text(
-                  'ADMIN VIEW',
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: Colors.blue[800],
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Color _getIncidentColor(String? incidentType) {
-    switch (incidentType?.toLowerCase()) {
-      case 'fire':
-        return const Color(0xFFF44336);
-      case 'accident':
-        return const Color(0xFFFF9800);
-      case 'flood':
-        return const Color(0xFF2196F3);
-      case 'medical':
-        return const Color(0xFFE91E63);
-      case 'crime':
-        return const Color(0xFF9C27B0);
-      default:
-        return const Color(0xFF607D8B);
+          );
+        }
+      }
     }
   }
-  
-  void _showDeleteConfirmation(BuildContext context, String docId, VoidCallback? onDelete) {
-  showDialog(
-    context: context,
-    builder: (BuildContext context) {
-      return AlertDialog(
-        title: const Text("Confirm Delete"),
-        content: const Text("Are you sure you want to delete this incident report? This action cannot be undone."),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text("Cancel"),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              if (onDelete != null) {
-                onDelete();
-              }
-            },
-            child: const Text(
-              "Delete",
-              style: TextStyle(color: Colors.red),
-            ),
-          ),
-        ],
-      );
-    },
-  );
-}
 }

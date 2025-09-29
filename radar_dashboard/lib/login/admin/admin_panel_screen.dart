@@ -9,7 +9,7 @@ import 'package:radar_dashboard/login/admin/system_toggle.dart';
 import 'package:radar_dashboard/navigation/main_navigation.dart';
 
 class AdminPanelScreen extends StatefulWidget {
-  final int initialSystem; // 0 = Dashboard, 1 = Radar
+  final int initialSystem;
   const AdminPanelScreen({super.key, this.initialSystem = 0});
 
   @override
@@ -20,22 +20,23 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
   late int _selectedSystem;
   String _searchQuery = '';
 
+  @override
+  void initState() {
+    super.initState();
+    _selectedSystem = widget.initialSystem;
+  }
+
+  // Getters for system configuration
   String get _currentCollection => _selectedSystem == 0 ? 'dashboard_users' : 'users';
   String get _systemTitle => _selectedSystem == 0 ? 'Dashboard System' : 'Radar App System';
   String get _systemDescription => _selectedSystem == 0 
       ? 'Manage dashboard user roles and permissions' 
       : 'Manage mobile app users and emergency data';
 
-  @override
-  void initState() {
-    super.initState();
-    _selectedSystem = widget.initialSystem; // set from constructor
-  }
-
   void _onSystemChanged(int system) {
     setState(() {
       _selectedSystem = system;
-      _searchQuery = ''; // Clear search when switching systems
+      _searchQuery = '';
     });
   }
 
@@ -47,93 +48,30 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
     setState(() => _searchQuery = '');
   }
 
+  void _viewUsersOnMap() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Opening map view...'),
+        backgroundColor: Color(0xFF2C5282),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       appBar: _buildAppBar(),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              Theme.of(context).colorScheme.surfaceContainerHighest,
-              Theme.of(context).colorScheme.surfaceContainer,
-            ],
-          ),
-        ),
-        child: SingleChildScrollView( // Wrap entire content in SingleChildScrollView
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // System Selection Toggle
-              SystemToggle(
-                selectedSystem: _selectedSystem,
-                onSystemChanged: _onSystemChanged,
-              ),
-              const SizedBox(height: 24), // Increased spacing
-              
-              // Header Section - Made larger
-              _buildHeaderSection(),
-              const SizedBox(height: 32), // Increased spacing
-              
-              // Statistics Cards - Made larger
-              Container(
-                height: 150, // Increased height
-                child: UsersStatisticsSection(
-                  collection: _currentCollection,
-                  systemType: _selectedSystem,
-                  searchQuery: _searchQuery,
-                ),
-              ),
-              const SizedBox(height: 32), // Increased spacing
-              
-              // Search Bar (only for Radar App System)
-              if (_selectedSystem == 1) 
-                Container(
-                  height: 60, // Increased height
-                  child: UsersSearchBar(
-                    searchQuery: _searchQuery,
-                    onSearchChanged: _onSearchChanged,
-                    onClearSearch: _onClearSearch,
-                  ),
-                ),
-              if (_selectedSystem == 1) const SizedBox(height: 24), // Increased spacing
-              
-              // Users List - Made larger with expanded height
-              Container(
-                height: MediaQuery.of(context).size.height * 0.7, // Increased height
-                child: _buildUsersList(),
-              ),
-              const SizedBox(height: 20), // Extra padding at bottom
-            ],
-          ),
-        ),
-      ),
+      body: _buildBody(),
     );
   }
 
-AppBar _buildAppBar() {
-  return AppBar(
-    leading: IconButton(
-      icon: const Icon(Icons.arrow_back, color: Colors.white),
-      onPressed: () {
-        // Navigate back to NavigationScreen which contains the main nav
-        Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(builder: (_) => NavigationScreen(
-            isDarkMode: false, // You'll need to get these values properly
-            onToggleTheme: (bool value) { 
-              // Add your theme toggle logic here or pass it down
-            },
-            userRole: 'admin', // You'll need to get the actual user role
-          )),
-          (route) => false,
-        );
-      },
-    ),
+  AppBar _buildAppBar() {
+    return AppBar(
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back, color: Colors.white),
+        onPressed: () => _navigateBackToMain(),
+      ),
       title: Text(
         _selectedSystem == 0 ? 'DASHBOARD USER MANAGEMENT' : 'RADAR APP USER MANAGEMENT',
         style: const TextStyle(
@@ -161,36 +99,54 @@ AppBar _buildAppBar() {
     );
   }
 
-  Widget _buildHeaderSection() {
+  Widget _buildBody() {
     return Container(
-      padding: const EdgeInsets.all(24), // Increased padding
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(20), // Larger border radius
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.15), // Stronger shadow
-            blurRadius: 15,
-            offset: const Offset(0, 6),
-          ),
+      decoration: _buildBackgroundGradient(),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SystemToggle(
+              selectedSystem: _selectedSystem,
+              onSystemChanged: _onSystemChanged,
+            ),
+            const SizedBox(height: 24),
+            _buildHeaderSection(),
+            const SizedBox(height: 32),
+            _buildStatisticsSection(),
+            const SizedBox(height: 32),
+            if (_selectedSystem == 1) ..._buildSearchSection(),
+            _buildUsersListSection(),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  BoxDecoration _buildBackgroundGradient() {
+    return BoxDecoration(
+      gradient: LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          Theme.of(context).colorScheme.surfaceContainerHighest,
+          Theme.of(context).colorScheme.surfaceContainer,
         ],
       ),
+    );
+  }
+
+  Widget _buildHeaderSection() {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      width: double.infinity,
+      decoration: _buildCardDecoration(),
       child: Row(
         children: [
-          Container(
-            padding: const EdgeInsets.all(20), // Increased padding
-            decoration: BoxDecoration(
-              color: const Color(0xFF2C5282).withOpacity(0.15), // More opaque
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              _selectedSystem == 0 ? Icons.dashboard : Icons.radar,
-              size: 40, // Larger icon
-              color: const Color(0xFF2C5282),
-            ),
-          ),
-          const SizedBox(width: 20), // Increased spacing
+          _buildHeaderIcon(),
+          const SizedBox(width: 20),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -198,21 +154,21 @@ AppBar _buildAppBar() {
                 Text(
                   _systemTitle.toUpperCase(),
                   style: const TextStyle(
-                    fontSize: 24, // Larger font
+                    fontSize: 24,
                     fontWeight: FontWeight.bold,
                     color: Color(0xFF2C5282),
-                    letterSpacing: 1.2, // More letter spacing
+                    letterSpacing: 1.2,
                   ),
                 ),
-                const SizedBox(height: 8), // Increased spacing
+                const SizedBox(height: 8),
                 Text(
                   _systemDescription,
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-                    fontSize: 16, // Larger font
+                    fontSize: 16,
                   ),
                 ),
-                const SizedBox(height: 12), // Increased spacing
+                const SizedBox(height: 12),
                 _buildLiveStats(),
               ],
             ),
@@ -222,17 +178,42 @@ AppBar _buildAppBar() {
     );
   }
 
+  BoxDecoration _buildCardDecoration() {
+    return BoxDecoration(
+      color: Theme.of(context).colorScheme.surface,
+      borderRadius: BorderRadius.circular(20),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withOpacity(0.15),
+          blurRadius: 15,
+          offset: const Offset(0, 6),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHeaderIcon() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF2C5282).withOpacity(0.15),
+        shape: BoxShape.circle,
+      ),
+      child: Icon(
+        _selectedSystem == 0 ? Icons.dashboard : Icons.radar,
+        size: 40,
+        color: const Color(0xFF2C5282),
+      ),
+    );
+  }
+
   Widget _buildLiveStats() {
     return StreamBuilder<QuerySnapshot>(
       stream: FirebaseFirestore.instance.collection(_currentCollection).snapshots(),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          return _buildLoadingText();
-        }
-
+        if (!snapshot.hasData) return _buildLoadingText();
         final users = snapshot.data!.docs;
         final filteredUsers = _selectedSystem == 1 ? _filterRadarUsers(users) : users;
-        
         return _buildStatsChips(users, filteredUsers);
       },
     );
@@ -242,7 +223,7 @@ AppBar _buildAppBar() {
     return Text(
       'Loading statistics...',
       style: TextStyle(
-        fontSize: 14, // Larger font
+        fontSize: 14,
         color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
         fontStyle: FontStyle.italic,
       ),
@@ -250,48 +231,51 @@ AppBar _buildAppBar() {
   }
 
   Widget _buildStatsChips(List<QueryDocumentSnapshot> allUsers, List<QueryDocumentSnapshot> filteredUsers) {
-    if (_selectedSystem == 1) {
-      final activeUsers = filteredUsers.where((user) => _isUserActive(user)).length;
-      final emergencyReports = _calculateEmergencyReports(filteredUsers);
+    final chips = _selectedSystem == 1 
+        ? _buildRadarSystemChips(allUsers, filteredUsers)
+        : _buildDashboardSystemChips(allUsers);
+    
+    return Wrap(
+      spacing: 12,
+      runSpacing: 8,
+      children: chips,
+    );
+  }
 
-      return Wrap(
-        spacing: 12, // Increased spacing
-        runSpacing: 8, // Increased spacing
-        children: [
-          _buildStatChip('Users: ${filteredUsers.length}', Colors.blue),
-          _buildStatChip('Active: $activeUsers', Colors.green),
-          _buildStatChip('Emergencies: $emergencyReports', Colors.orange),
-          if (_searchQuery.isNotEmpty) 
-            _buildStatChip('Filtered', Colors.purple),
-        ],
-      );
-    } else {
-      final adminCount = allUsers.where((user) => _isAdmin(user)).length;
+  List<Widget> _buildRadarSystemChips(List<QueryDocumentSnapshot> allUsers, List<QueryDocumentSnapshot> filteredUsers) {
+    final activeUsers = filteredUsers.where((user) => _isUserActive(user)).length;
+    final emergencyReports = _calculateEmergencyReports(filteredUsers);
 
-      return Wrap(
-        spacing: 12, // Increased spacing
-        runSpacing: 8, // Increased spacing
-        children: [
-          _buildStatChip('Total Users: ${allUsers.length}', Colors.blue),
-          _buildStatChip('Admins: $adminCount', Colors.purple),
-          _buildStatChip('Users: ${allUsers.length - adminCount}', Colors.green),
-        ],
-      );
-    }
+    return [
+      _buildStatChip('Users: ${filteredUsers.length}', Colors.blue),
+      _buildStatChip('Active: $activeUsers', Colors.green),
+      _buildStatChip('Emergencies: $emergencyReports', Colors.orange),
+      if (_searchQuery.isNotEmpty) _buildStatChip('Filtered', Colors.purple),
+    ];
+  }
+
+  List<Widget> _buildDashboardSystemChips(List<QueryDocumentSnapshot> allUsers) {
+    final adminCount = allUsers.where((user) => _isAdmin(user)).length;
+
+    return [
+      _buildStatChip('Total Users: ${allUsers.length}', Colors.blue),
+      _buildStatChip('Admins: $adminCount', Colors.purple),
+      _buildStatChip('Users: ${allUsers.length - adminCount}', Colors.green),
+    ];
   }
 
   Widget _buildStatChip(String text, Color color) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), // Increased padding
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.15), // More opaque
-        borderRadius: BorderRadius.circular(16), // Larger border radius
-        border: Border.all(color: color.withOpacity(0.4)), // Thicker border
+        color: color.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.4)),
       ),
       child: Text(
         text,
         style: TextStyle(
-          fontSize: 14, // Larger font
+          fontSize: 14,
           fontWeight: FontWeight.bold,
           color: color,
         ),
@@ -299,114 +283,245 @@ AppBar _buildAppBar() {
     );
   }
 
-Widget _buildUsersList() {
-  return StreamBuilder<QuerySnapshot>(
-    stream: FirebaseFirestore.instance
-        .collection(_currentCollection)
-        .orderBy(_selectedSystem == 0 ? 'email' : 'createdAt', descending: true)
-        .snapshots(),
-    builder: (context, snapshot) {
-      if (snapshot.connectionState == ConnectionState.waiting) {
-        return _buildLoadingState();
-      }
-
-      if (snapshot.hasError) {
-        return _buildErrorState(snapshot.error.toString());
-      }
-
-      if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-        return _buildEmptyState();
-      }
-
-      final users = snapshot.data!.docs;
-      final displayUsers = _selectedSystem == 1 ? _filterRadarUsers(users) : users;
-
-      if (_selectedSystem == 1 && displayUsers.isEmpty && _searchQuery.isNotEmpty) {
-        return _buildNoResultsState();
-      }
-
-      return _buildUsersCard(displayUsers, users.length);
-    },
-  );
-}
-
-Widget _buildUsersCard(List<QueryDocumentSnapshot> displayUsers, int totalUsers) {
-  return Card(
-    elevation: 6,
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-    child: Container(
-      constraints: BoxConstraints(
-        minHeight: 200, // Minimum height to prevent being too small
-        maxHeight: MediaQuery.of(context).size.height * 0.7, // Maximum height
+  Widget _buildStatisticsSection() {
+    return Container(
+      height: 150,
+      child: UsersStatisticsSection(
+        collection: _currentCollection,
+        systemType: _selectedSystem,
+        searchQuery: _searchQuery,
       ),
-      padding: const EdgeInsets.all(25),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildUsersHeader(displayUsers.length, totalUsers),
-          const SizedBox(height: 20),
-          Expanded( // This will take remaining space but respect maxHeight constraint
-            child: ListView.separated(
-              itemCount: displayUsers.length,
-              separatorBuilder: (context, index) => const Divider(height: 16, thickness: 1),
-              itemBuilder: (context, index) {
-                final user = displayUsers[index];
-                final data = user.data() as Map<String, dynamic>;
-                
-                return Container(
-                  margin: const EdgeInsets.symmetric(vertical: 4),
-                  child: _selectedSystem == 0 
-                      ? DashboardUserCard(user: user, data: data)
-                      : RadarAppUserCard(
-                          user: user, 
-                          data: data,
-                          searchQuery: _searchQuery,
-                        ),
-                );
-              },
-            ),
+    );
+  }
+
+  List<Widget> _buildSearchSection() {
+    return [
+      Container(
+        height: 60,
+        child: UsersSearchBar(
+          searchQuery: _searchQuery,
+          onSearchChanged: _onSearchChanged,
+          onClearSearch: _onClearSearch,
+        ),
+      ),
+      const SizedBox(height: 24),
+    ];
+  }
+
+  Widget _buildUsersListSection() {
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.7,
+      child: _buildUsersList(),
+    );
+  }
+
+  Widget _buildUsersList() {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection(_currentCollection)
+          .orderBy(_selectedSystem == 0 ? 'email' : 'createdAt', descending: true)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _buildLoadingState();
+        }
+
+        if (snapshot.hasError) {
+          return _buildErrorState(snapshot.error.toString());
+        }
+
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+          return _buildEmptyState();
+        }
+
+        final users = snapshot.data!.docs;
+        final displayUsers = _selectedSystem == 1 ? _filterRadarUsers(users) : users;
+
+        if (_selectedSystem == 1 && displayUsers.isEmpty && _searchQuery.isNotEmpty) {
+          return _buildNoResultsState();
+        }
+
+        return _buildUsersCard(displayUsers, users.length);
+      },
+    );
+  }
+
+  Widget _buildUsersCard(List<QueryDocumentSnapshot> displayUsers, int totalUsers) {
+    return Container(
+      padding: const EdgeInsets.all(16.0),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Theme.of(context).colorScheme.surface,
+            Theme.of(context).colorScheme.surfaceContainer,
+          ],
+        ),
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+            spreadRadius: 1,
           ),
         ],
       ),
-    ),
-  );
-}
-
-  Widget _buildUsersHeader(int displayCount, int totalCount) {
-    return Row(
-      children: [
-        Text(
-          _selectedSystem == 0 ? "DASHBOARD USERS" : "RADAR APP USERS",
-          style: const TextStyle(
-            fontSize: 18, // Larger font
-            fontWeight: FontWeight.bold,
-            color: Color(0xFF2C5282),
-            letterSpacing: 1.2, // More letter spacing
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: Container(
+          constraints: BoxConstraints(
+            minHeight: 200,
+            maxHeight: MediaQuery.of(context).size.height * 0.7,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildUsersHeader(displayUsers.length, totalUsers),
+              _buildUsersListContent(displayUsers),
+            ],
           ),
         ),
-        const Spacer(),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Text(
-              '$displayCount users',
-              style: TextStyle(
-                fontSize: 16, // Larger font
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                fontWeight: FontWeight.bold,
-              ),
+      ),
+    );
+  }
+
+  Widget _buildUsersHeader(int displayCount, int totalCount) {
+    return Container(
+      padding: const EdgeInsets.all(25),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerLow.withOpacity(0.7),
+        border: Border(
+          bottom: BorderSide(
+            color: Theme.of(context).colorScheme.outline.withOpacity(0.1),
+            width: 1,
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF2C5282).withOpacity(0.1),
+              shape: BoxShape.circle,
             ),
-            if (_selectedSystem == 1 && _searchQuery.isNotEmpty)
-              Text(
-                '$totalCount total',
-                style: const TextStyle(
-                  fontSize: 14, // Larger font
-                  color: Colors.grey,
+            child: Icon(
+              _selectedSystem == 0 ? Icons.dashboard : Icons.people_alt,
+              size: 20,
+              color: const Color(0xFF2C5282),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            _selectedSystem == 0 ? "DASHBOARD USERS" : "RADAR APP USERS",
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Theme.of(context).colorScheme.onSurface,
+              letterSpacing: 1.1,
+            ),
+          ),
+          const Spacer(),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2C5282).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: const Color(0xFF2C5282).withOpacity(0.2),
+                  ),
+                ),
+                child: Text(
+                  '$displayCount ${displayCount == 1 ? 'user' : 'users'}',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF2C5282),
+                  ),
                 ),
               ),
-          ],
+              if (_selectedSystem == 1 && _searchQuery.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    '$totalCount total',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildUsersListContent(List<QueryDocumentSnapshot> displayUsers) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 8.0),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Theme.of(context).colorScheme.surface.withOpacity(0.5),
+              Theme.of(context).colorScheme.surfaceContainer.withOpacity(0.3),
+            ],
+          ),
         ),
-      ],
+        child: ListView.separated(
+          padding: const EdgeInsets.all(12.0),
+          itemCount: displayUsers.length,
+          separatorBuilder: (context, index) => Container(
+            height: 4.0,
+            margin: const EdgeInsets.symmetric(vertical: 6.0),
+          ),
+          itemBuilder: (context, index) {
+            final user = displayUsers[index];
+            final data = user.data() as Map<String, dynamic>;
+            
+            return Container(
+              padding: const EdgeInsets.all(4.0),
+              margin: const EdgeInsets.symmetric(vertical: 4.0),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: _selectedSystem == 0 
+                  ? DashboardUserCard(
+                      user: user, 
+                      data: data,
+                      onUserDeleted: () {
+                        setState(() {});
+                      },
+                    )
+                  : RadarAppUserCard(
+                      user: user, 
+                      data: data,
+                      searchQuery: _searchQuery,
+                      onUserDeleted: () {
+                        setState(() {});
+                      },
+                    ),
+            );
+          },
+        ),
+      ),
     );
   }
 
@@ -415,12 +530,12 @@ Widget _buildUsersCard(List<QueryDocumentSnapshot> displayUsers, int totalUsers)
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const CircularProgressIndicator(strokeWidth: 3), // Thicker stroke
-          const SizedBox(height: 20), // Increased spacing
+          const CircularProgressIndicator(strokeWidth: 3),
+          const SizedBox(height: 20),
           Text(
             'Loading ${_selectedSystem == 0 ? 'dashboard' : 'radar app'} users...',
             style: TextStyle(
-              fontSize: 18, // Larger font
+              fontSize: 18,
               color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
             ),
           ),
@@ -434,31 +549,31 @@ Widget _buildUsersCard(List<QueryDocumentSnapshot> displayUsers, int totalUsers)
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.error_outline, size: 80, color: Colors.red), // Larger icon
-          const SizedBox(height: 20), // Increased spacing
+          const Icon(Icons.error_outline, size: 80, color: Colors.red),
+          const SizedBox(height: 20),
           const Text(
             'Failed to load users',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold), // Larger font
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
           ),
-          const SizedBox(height: 12), // Increased spacing
+          const SizedBox(height: 12),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20), // Added padding
+            padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Text(
               error,
               textAlign: TextAlign.center,
               style: TextStyle(
-                fontSize: 14, // Larger font
+                fontSize: 14,
                 color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6)
               ),
             ),
           ),
-          const SizedBox(height: 20), // Increased spacing
+          const SizedBox(height: 20),
           ElevatedButton(
             onPressed: () => setState(() {}),
             style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12), // Larger button
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
             ),
-            child: const Text('Try Again', style: TextStyle(fontSize: 16)), // Larger font
+            child: const Text('Try Again', style: TextStyle(fontSize: 16)),
           ),
         ],
       ),
@@ -470,20 +585,20 @@ Widget _buildUsersCard(List<QueryDocumentSnapshot> displayUsers, int totalUsers)
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.people_outline, size: 80, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3)), // Larger icon
-          const SizedBox(height: 20), // Increased spacing
+          Icon(Icons.people_outline, size: 80, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
+          const SizedBox(height: 20),
           Text(
             "No ${_selectedSystem == 0 ? 'dashboard' : 'radar app'} users found",
             style: TextStyle(
-              fontSize: 18, // Larger font
+              fontSize: 18,
               color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6)
             ),
           ),
-          const SizedBox(height: 12), // Increased spacing
+          const SizedBox(height: 12),
           Text(
             "Users will appear here once they register",
             style: TextStyle(
-              fontSize: 14, // Larger font
+              fontSize: 14,
               color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6)
             ),
           ),
@@ -497,30 +612,30 @@ Widget _buildUsersCard(List<QueryDocumentSnapshot> displayUsers, int totalUsers)
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.search_off, size: 80, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3)), // Larger icon
-          const SizedBox(height: 20), // Increased spacing
+          Icon(Icons.search_off, size: 80, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
+          const SizedBox(height: 20),
           Text(
             "No users found for \"$_searchQuery\"",
             style: TextStyle(
-              fontSize: 18, // Larger font
+              fontSize: 18,
               color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6)
             ),
           ),
-          const SizedBox(height: 12), // Increased spacing
+          const SizedBox(height: 12),
           Text(
             "Try adjusting your search terms",
             style: TextStyle(
-              fontSize: 14, // Larger font
-              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6)
+              fontSize: 14,
+              color: Colors.black
             ),
           ),
-          const SizedBox(height: 20), // Increased spacing
+          const SizedBox(height: 20),
           ElevatedButton(
             onPressed: _onClearSearch,
             style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12), // Larger button
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
             ),
-            child: const Text('Clear Search', style: TextStyle(fontSize: 16)), // Larger font
+            child: const Text('Clear Search', style: TextStyle(fontSize: 16)),
           ),
         ],
       ),
@@ -565,12 +680,17 @@ Widget _buildUsersCard(List<QueryDocumentSnapshot> displayUsers, int totalUsers)
     return data['role'] == 'admin';
   }
 
-  void _viewUsersOnMap() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Opening map view...'),
-        backgroundColor: Color(0xFF2C5282),
-      ),
+  void _navigateBackToMain() {
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => NavigationScreen(
+        isDarkMode: false,
+        onToggleTheme: (bool value) { 
+          // Add your theme toggle logic here or pass it down
+        },
+        userRole: 'admin',
+      )),
+      (route) => false,
     );
   }
 }

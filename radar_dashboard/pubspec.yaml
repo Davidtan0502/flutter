@@ -39,7 +39,7 @@ dependencies:
   cloud_firestore: ^6.0.1
   firebase_core: ^4.1.0
   geocoding: ^4.0.0
-  flutter_secure_storage: ^9.2.4
+  # flutter_secure_storage: ^9.2.4
   shared_preferences: ^2.5.3
   firebase_performance: ^0.11.0+1
   firebase_analytics: ^12.0.1
@@ -73,6 +73,9 @@ dependencies:
   flutter_cache_manager: ^3.4.1
   image_picker: ^1.2.0
   provider: ^6.1.5+1
+  flutter_secure_storage: ^9.2.4
+
+
 
 
 dev_dependencies:

@@ -41,6 +41,21 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
   final RegExp _passwordRegex = RegExp(
       r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$');
 
+  // Add this method to update user's last login timestamp
+  Future<void> _updateUserLastLogin(String userId) async {
+    try {
+      await _firestore
+          .collection('dashboard_users')
+          .doc(userId)
+          .update({
+            'lastLogin': Timestamp.now(),
+          });
+      debugPrint('User last login updated: $userId');
+    } catch (e) {
+      debugPrint('Error updating user last login: $e');
+    }
+  }
+
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     _formKey.currentState!.save();
@@ -96,6 +111,9 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
           return;
         }
 
+        // UPDATE USER'S LAST LOGIN TIMESTAMP FOR ONLINE/OFFLINE STATUS
+        await _updateUserLastLogin(result.user!.uid);
+
         _showSnackbar('Login successful! Redirecting to dashboard...', SnackbarType.success);
         await Future.delayed(const Duration(seconds: 1));
 
@@ -127,6 +145,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
             'lastPasswordChange': Timestamp.now(),
           },
           'createdAt': Timestamp.now(),
+          'lastLogin': Timestamp.now(), // Set initial last login timestamp
         });
 
         await result.user!.sendEmailVerification();

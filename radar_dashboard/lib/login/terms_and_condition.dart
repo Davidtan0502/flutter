@@ -139,7 +139,7 @@ class _TermsAndConditionsScreenState extends State<TermsAndConditionsScreen> {
 
   Widget _buildTermsContent() {
     return SizedBox(
-      height: 400,
+      height: 300,
       child: SingleChildScrollView(
         controller: _scrollController,
         child: RichText(
@@ -372,11 +372,11 @@ class _TermsAndConditionsScreenState extends State<TermsAndConditionsScreen> {
                         _buildHeader(),
                         const SizedBox(height: 20),
                         _buildLegalComplianceNotice(),
-                        const SizedBox(height: 20),
+                        const SizedBox(height: 10),
                         _buildTermsContent(),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 20),
                         _buildScrollPrompt(),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 10),
                         _buildActionButtons(),
                       ],
                     ),

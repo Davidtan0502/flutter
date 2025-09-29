@@ -1,5 +1,4 @@
 import 'dart:async';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -17,6 +16,7 @@ class AnalyticsScreen extends StatefulWidget {
   State<AnalyticsScreen> createState() => _AnalyticsScreenState();
 }
 
+// Data Models
 class EmergencyCase {
   final String day;
   final int count;
@@ -24,73 +24,363 @@ class EmergencyCase {
   EmergencyCase(this.day, this.count);
 }
 
-class _AnalyticsScreenState extends State<AnalyticsScreen> {
-  int _selectedWeekOffset = 0;
-  DateTimeRange? _dateRange;
-  String _userRole = '';
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> _lastFilteredDocs = [];
-  bool _isLoading = true;
-  Timer? _debounce;
-  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
-  bool _isOffline = false;
+class MonthlyCase {
+  final String month;
+  final int count;
 
-  @override
-  void initState() {
-    super.initState();
-    _getUserRole();
-    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> result) {
-      setState(() {
-        _isOffline = (result.isEmpty || result.contains(ConnectivityResult.none));
-      });
-    });
+  MonthlyCase(this.month, this.count);
+}
+
+class IncidentTypeCase {
+  final String type;
+  final int count;
+  final Color color;
+
+  IncidentTypeCase(this.type, this.count, this.color);
+}
+
+class AnalyticsData {
+  final int totalIncidents;
+  final int activeAlerts;
+  final int resolvedToday;
+  final int underReview;
+  final int criticalAlerts;
+  final double averageResponseTime;
+  final int respondedIncidents;
+  final Map<String, int> typeCounts;
+  final Map<String, int> severityCounts;
+  final List<Map<String, dynamic>> recentCriticalIncidents;
+
+  AnalyticsData({
+    required this.totalIncidents,
+    required this.activeAlerts,
+    required this.resolvedToday,
+    required this.underReview,
+    required this.criticalAlerts,
+    required this.averageResponseTime,
+    required this.respondedIncidents,
+    required this.typeCounts,
+    required this.severityCounts,
+    required this.recentCriticalIncidents,
+  });
+}
+
+// Service Classes
+class AnalyticsService {
+  static AnalyticsData processIncidents(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+    int totalIncidents = docs.length;
+    int resolvedToday = 0;
+    int activeAlerts = 0;
+    int underReview = 0;
+    int criticalAlerts = 0;
+    
+    // Simplified incident types: Fire, Flood, Accidents, Others
+    final Map<String, int> typeCounts = {
+      'Fire': 0,
+      'Flood': 0,
+      'Accidents': 0,
+      'Others': 0,
+    };
+    
+    final Map<String, int> severityCounts = {
+      'Critical': 0,
+      'High': 0,
+      'Medium': 0,
+      'Low': 0,
+      'Unknown': 0,
+    };
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+
+    double totalResponseTime = 0.0;
+    int respondedIncidents = 0;
+    final List<Map<String, dynamic>> recentCriticalIncidents = [];
+
+    for (var doc in docs) {
+      final data = doc.data();
+      final status = (data['status'] ?? 'pending').toString().toLowerCase();
+      final typeRaw = (data['incidentType'] ?? '').toString().toLowerCase();
+      final severity = (data['severity'] ?? 'unknown').toString().toLowerCase();
+      final reportedTs = data['timestamp'] as Timestamp?;
+      final resolvedTs = data['resolvedAt'] as Timestamp?;
+
+      // Simplified incident type classification
+      _classifyIncidentType(typeRaw, typeCounts);
+      
+      // Classify severity
+      _classifySeverity(severity, severityCounts);
+
+      // Count critical alerts (critical severity + not resolved)
+      if (severity.contains('critical') && status != 'resolved') {
+        criticalAlerts++;
+      }
+
+      // Calculate response time
+      final responseTime = _calculateResponseTime(
+        reportedTs: reportedTs,
+        resolvedTs: resolvedTs,
+        status: status,
+        currentTime: now,
+      );
+      
+      if (responseTime != null) {
+        totalResponseTime += responseTime;
+        respondedIncidents++;
+      }
+
+      // Track recent critical incidents
+      _trackCriticalIncidents(
+        data: data,
+        docId: doc.id,
+        severity: severity,
+        status: status,
+        reportedTs: reportedTs,
+        currentTime: now,
+        recentCriticalIncidents: recentCriticalIncidents,
+      );
+
+      // Update status counts
+      _updateStatusCounts(
+        status: status,
+        resolvedTs: resolvedTs,
+        today: today,
+        resolvedToday: () => resolvedToday++,
+        underReview: () => underReview++,
+        activeAlerts: () => activeAlerts++,
+      );
+    }
+
+    final averageResponseTime = respondedIncidents > 0 ? totalResponseTime / respondedIncidents : 0.0;
+
+    return AnalyticsData(
+      totalIncidents: totalIncidents,
+      activeAlerts: activeAlerts,
+      resolvedToday: resolvedToday,
+      underReview: underReview,
+      criticalAlerts: criticalAlerts,
+      averageResponseTime: averageResponseTime,
+      respondedIncidents: respondedIncidents,
+      typeCounts: typeCounts,
+      severityCounts: severityCounts,
+      recentCriticalIncidents: recentCriticalIncidents,
+    );
   }
 
-  @override
-  void dispose() {
-    _debounce?.cancel();
-    _connectivitySubscription?.cancel();
-    super.dispose();
+  static void _classifyIncidentType(String typeRaw, Map<String, int> typeCounts) {
+    if (typeRaw.contains('fire')) {
+      typeCounts['Fire'] = typeCounts['Fire']! + 1;
+    } else if (typeRaw.contains('flood')) {
+      typeCounts['Flood'] = typeCounts['Flood']! + 1;
+    } else if (typeRaw.contains('accident') || typeRaw.contains('crash')) {
+      typeCounts['Accidents'] = typeCounts['Accidents']! + 1;
+    } else {
+      typeCounts['Others'] = typeCounts['Others']! + 1;
+    }
   }
 
-  Future<void> _getUserRole() async {
+  static void _classifySeverity(String severity, Map<String, int> severityCounts) {
+    if (severity.contains('critical')) {
+      severityCounts['Critical'] = severityCounts['Critical']! + 1;
+    } else if (severity.contains('high')) {
+      severityCounts['High'] = severityCounts['High']! + 1;
+    } else if (severity.contains('medium')) {
+      severityCounts['Medium'] = severityCounts['Medium']! + 1;
+    } else if (severity.contains('low')) {
+      severityCounts['Low'] = severityCounts['Low']! + 1;
+    } else {
+      severityCounts['Unknown'] = severityCounts['Unknown']! + 1;
+    }
+  }
+
+  static double? _calculateResponseTime({
+    required Timestamp? reportedTs,
+    required Timestamp? resolvedTs,
+    required String status,
+    required DateTime currentTime,
+  }) {
+    if (reportedTs == null) return null;
+
+    if (status == 'resolved' && resolvedTs != null) {
+      final responseTimeMinutes = resolvedTs.toDate().difference(reportedTs.toDate()).inMinutes;
+      return responseTimeMinutes.toDouble();
+    } else if (status != 'resolved') {
+      final timeSinceReported = currentTime.difference(reportedTs.toDate()).inMinutes;
+      return timeSinceReported.toDouble();
+    }
+    
+    return null;
+  }
+
+  static void _trackCriticalIncidents({
+    required Map<String, dynamic> data,
+    required String docId,
+    required String severity,
+    required String status,
+    required Timestamp? reportedTs,
+    required DateTime currentTime,
+    required List<Map<String, dynamic>> recentCriticalIncidents,
+  }) {
+    if (severity.contains('critical') && reportedTs != null) {
+      final incidentTime = reportedTs.toDate();
+      final twentyFourHoursAgo = currentTime.subtract(const Duration(hours: 24));
+
+      if (incidentTime.isAfter(twentyFourHoursAgo) && status != 'resolved') {
+        recentCriticalIncidents.add({
+          'id': docId,
+          'type': data['incidentType'] ?? 'Unknown',
+          'location': data['address'] ?? 'Unknown location',
+          'time': incidentTime,
+          'severity': severity,
+          'status': status,
+        });
+      }
+    }
+  }
+
+  static void _updateStatusCounts({
+    required String status,
+    required Timestamp? resolvedTs,
+    required DateTime today,
+    required VoidCallback resolvedToday,
+    required VoidCallback underReview,
+    required VoidCallback activeAlerts,
+  }) {
+    if (status == 'resolved') {
+      if (resolvedTs != null) {
+        final resolvedDate = DateTime(
+          resolvedTs.toDate().year,
+          resolvedTs.toDate().month,
+          resolvedTs.toDate().day,
+        );
+        if (resolvedDate == today) resolvedToday();
+      }
+    } else if (status == 'under review') {
+      underReview();
+    } else if (status == 'pending' || status == 'in progress') {
+      activeAlerts();
+    }
+  }
+
+  static List<EmergencyCase> getWeeklyData(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    int selectedWeekOffset,
+  ) {
+    final now = DateTime.now();
+    final startOfWeek = now.subtract(Duration(days: now.weekday - 1 + (7 * selectedWeekOffset.abs())));
+    final endOfWeek = startOfWeek.add(const Duration(days: 6));
+
+    // Initialize with all days of the week
+    final Map<String, int> weeklyData = {};
+    for (int i = 0; i < 7; i++) {
+      final date = startOfWeek.add(Duration(days: i));
+      final dayName = _weekdayName(date.weekday);
+      weeklyData[dayName] = 0;
+    }
+
+    for (var doc in docs) {
+      final data = doc.data();
+      final ts = data['timestamp'] as Timestamp?;
+      if (ts == null) continue;
+
+      final date = ts.toDate();
+      if (date.isAfter(startOfWeek.subtract(const Duration(seconds: 1))) &&
+          date.isBefore(endOfWeek.add(const Duration(days: 1)))) {
+        final weekday = _weekdayName(date.weekday);
+        weeklyData[weekday] = (weeklyData[weekday] ?? 0) + 1;
+      }
+    }
+
+    // Convert to list in correct order
+    final List<EmergencyCase> result = [];
+    for (int i = 0; i < 7; i++) {
+      final date = startOfWeek.add(Duration(days: i));
+      final dayName = _weekdayName(date.weekday);
+      result.add(EmergencyCase(dayName, weeklyData[dayName]!));
+    }
+
+    return result;
+  }
+
+  static List<MonthlyCase> getMonthlyData(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    int selectedMonthOffset,
+  ) {
+    final Map<String, int> monthlyData = {};
+    final now = DateTime.now();
+    final currentMonth = DateTime(now.year, now.month);
+    final targetMonth = DateTime(currentMonth.year, currentMonth.month + selectedMonthOffset);
+
+    for (var doc in docs) {
+      final data = doc.data();
+      final ts = data['timestamp'] as Timestamp?;
+      if (ts == null) continue;
+
+      final date = ts.toDate();
+      final incidentMonth = DateTime(date.year, date.month);
+
+      if (incidentMonth.year == targetMonth.year && incidentMonth.month == targetMonth.month) {
+        final monthKey = DateFormat('MMM yyyy').format(date);
+        monthlyData[monthKey] = (monthlyData[monthKey] ?? 0) + 1;
+      }
+    }
+
+    // Ensure we always return at least one entry for the target month
+    final monthKey = DateFormat('MMM yyyy').format(targetMonth);
+    if (monthlyData.isEmpty) {
+      return [MonthlyCase(monthKey, 0)];
+    }
+
+    return [MonthlyCase(monthKey, monthlyData[monthKey]!)];
+  }
+
+  static List<IncidentTypeCase> getIncidentTypeData(Map<String, int> typeCounts) {
+    return [
+      IncidentTypeCase('Fire', typeCounts['Fire']!, Colors.red),
+      IncidentTypeCase('Flood', typeCounts['Flood']!, Colors.blue),
+      IncidentTypeCase('Accidents', typeCounts['Accidents']!, Colors.orange),
+      IncidentTypeCase('Others', typeCounts['Others']!, Colors.grey),
+    ];
+  }
+
+  static String _weekdayName(int weekday) {
+    const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    return names[weekday - 1];
+  }
+}
+
+class UserService {
+  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  static Future<String> getUserRole() async {
     final user = _auth.currentUser;
-    if (user == null) return;
+    if (user == null) return 'user';
+    
     try {
-      final doc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-      setState(() {
-        _userRole = (doc.data()?['role'] as String?) ?? 'user';
-      });
+      final doc = await _firestore.collection('users').doc(user.uid).get();
+      return (doc.data()?['role'] as String?) ?? 'user';
     } catch (e) {
       debugPrint('Error getting user role: $e');
+      return 'user';
     }
   }
 
-  Query<Map<String, dynamic>> _buildQuery() {
-    Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection('incidents');
+  static Stream<QuerySnapshot> getUserCountStream() {
+    return _firestore.collection('users').snapshots();
+  }
+}
 
-    if (_dateRange != null) {
-      final start = DateTime(_dateRange!.start.year, _dateRange!.start.month, _dateRange!.start.day);
-      final end = DateTime(_dateRange!.end.year, _dateRange!.end.month, _dateRange!.end.day, 23, 59, 59);
-
-      q = q
-          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
-          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(end))
-          .orderBy('timestamp', descending: true);
-    } else {
-      // Limit to last 90 days if no date range selected to avoid huge data loads
-      final recentLimitDate = DateTime.now().subtract(const Duration(days: 90));
-      q = q
-          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(recentLimitDate))
-          .orderBy('timestamp', descending: true);
-    }
-
-    return q;
+class DateRangeService {
+  static String getDateRangeLabel(DateTimeRange? dateRange) {
+    if (dateRange == null) return 'Last 90 Days';
+    final formatter = DateFormat('MMM d, yyyy');
+    return '${formatter.format(dateRange.start)} - ${formatter.format(dateRange.end)}';
   }
 
-  Future<void> _pickDateRange() async {
+  static Future<DateTimeRange?> pickDateRange(BuildContext context, DateTimeRange? currentRange) async {
     final now = DateTime.now();
-    final initial = _dateRange ??
+    final initial = currentRange ??
         DateTimeRange(
           start: now.subtract(const Duration(days: 30)),
           end: now,
@@ -99,7 +389,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     final picked = await showDateRangePicker(
       context: context,
       firstDate: DateTime(2020, 1, 1),
-      lastDate: DateTime(now.year + 1),
+      lastDate: now, // Prevent selecting dates in the future
       initialDateRange: initial,
       helpText: 'Select Analytics Date Range',
       saveText: 'Apply',
@@ -118,13 +408,87 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       },
     );
 
+    return picked;
+  }
+}
+
+class QueryBuilder {
+  static Query<Map<String, dynamic>> buildQuery(DateTimeRange? dateRange) {
+    Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection('incidents');
+
+    if (dateRange != null) {
+      final start = DateTime(dateRange.start.year, dateRange.start.month, dateRange.start.day);
+      final end = DateTime(dateRange.end.year, dateRange.end.month, dateRange.end.day, 23, 59, 59);
+
+      // Ensure end date doesn't exceed current time
+      final actualEnd = end.isAfter(DateTime.now()) ? DateTime.now() : end;
+
+      q = q
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(actualEnd))
+          .orderBy('timestamp', descending: true);
+    } else {
+      // Limit to last 90 days if no date range selected to avoid huge data loads
+      final recentLimitDate = DateTime.now().subtract(const Duration(days: 90));
+      q = q
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(recentLimitDate))
+          .orderBy('timestamp', descending: true);
+    }
+
+    return q;
+  }
+}
+
+// Main Screen State
+class _AnalyticsScreenState extends State<AnalyticsScreen> {
+  int _selectedWeekOffset = 0;
+  int _selectedMonthOffset = 0;
+  DateTimeRange? _dateRange;
+  final List<QueryDocumentSnapshot<Map<String, dynamic>>> _lastFilteredDocs = [];
+  bool _isLoading = true;
+  Timer? _debounce;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  bool _isOffline = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeServices();
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _connectivitySubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _initializeServices() async {
+    _setupConnectivityListener();
+  }
+
+  void _setupConnectivityListener() {
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> result) {
+      if (mounted) {
+        setState(() {
+          _isOffline = (result.isEmpty || result.contains(ConnectivityResult.none));
+        });
+      }
+    });
+  }
+
+  Future<void> _pickDateRange() async {
+    final picked = await DateRangeService.pickDateRange(context, _dateRange);
+    
     if (picked != null) {
       // Debounce to avoid rapid query changes
       if (_debounce?.isActive ?? false) _debounce!.cancel();
       _debounce = Timer(const Duration(milliseconds: 500), () {
-        setState(() {
-          _dateRange = picked;
-        });
+        if (mounted) {
+          setState(() {
+            _dateRange = picked;
+          });
+        }
       });
     }
   }
@@ -133,201 +497,16 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     setState(() => _dateRange = null);
   }
 
-  String _dateRangeLabel() {
-    if (_dateRange == null) return 'Last 90 Days';
-    final f = DateFormat('MMM d, yyyy');
-    return '${f.format(_dateRange!.start)} - ${f.format(_dateRange!.end)}';
-  }
-
-  Map<String, dynamic> _processIncidents(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
-    int totalIncidents = docs.length;
-    int resolvedToday = 0;
-    int activeAlerts = 0;
-    int underReview = 0;
-    int criticalAlerts = 0;
-    Map<String, int> typeCounts = {
-      'Fire': 0,
-      'Accident': 0,
-      'Flood': 0,
-      'Earthquake': 0,
-      'Tsunami': 0,
-      'Hurricane': 0,
-      'Medical Emergency': 0,
-      'Civil Unrest': 0,
-      'Infrastructure Failure': 0,
-      'Environmental Hazard': 0,
-      'Other': 0,
-    };
-    Map<String, int> severityCounts = {
-      'Critical': 0,
-      'High': 0,
-      'Medium': 0,
-      'Low': 0,
-      'Unknown': 0,
-    };
-
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-
-    double totalResponseTime = 0;
-    int respondedIncidents = 0;
-    List<Map<String, dynamic>> recentCriticalIncidents = [];
-
-    for (var doc in docs) {
-      final data = doc.data();
-      final status = (data['status'] ?? 'pending').toString().toLowerCase();
-      final typeRaw = (data['incidentType'] ?? '').toString().toLowerCase();
-      final severity = (data['severity'] ?? 'unknown').toString().toLowerCase();
-      final reportedTs = data['timestamp'] as Timestamp?;
-      final resolvedTs = data['resolvedAt'] as Timestamp?;
-
-      // Type classification
-      if (typeRaw.contains('fire')) {
-        typeCounts['Fire'] = typeCounts['Fire']! + 1;
-      } else if (typeRaw.contains('accident') || typeRaw.contains('crash')) {
-        typeCounts['Accident'] = typeCounts['Accident']! + 1;
-      } else if (typeRaw.contains('flood') || typeRaw.contains('flooding')) {
-        typeCounts['Flood'] = typeCounts['Flood']! + 1;
-      } else if (typeRaw.contains('earthquake') || typeRaw.contains('quake')) {
-        typeCounts['Earthquake'] = typeCounts['Earthquake']! + 1;
-      } else if (typeRaw.contains('tsunami')) {
-        typeCounts['Tsunami'] = typeCounts['Tsunami']! + 1;
-      } else if (typeRaw.contains('hurricane') || typeRaw.contains('typhoon') || typeRaw.contains('cyclone')) {
-        typeCounts['Hurricane'] = typeCounts['Hurricane']! + 1;
-      } else if (typeRaw.contains('medical') || typeRaw.contains('health') || typeRaw.contains('injury')) {
-        typeCounts['Medical Emergency'] = typeCounts['Medical Emergency']! + 1;
-      } else if (typeRaw.contains('unrest') || typeRaw.contains('riot') || typeRaw.contains('protest')) {
-        typeCounts['Civil Unrest'] = typeCounts['Civil Unrest']! + 1;
-      } else if (typeRaw.contains('infrastructure') || typeRaw.contains('power') || typeRaw.contains('water') || typeRaw.contains('bridge')) {
-        typeCounts['Infrastructure Failure'] = typeCounts['Infrastructure Failure']! + 1;
-      } else if (typeRaw.contains('environmental') || typeRaw.contains('chemical') || typeRaw.contains('spill') || typeRaw.contains('pollution')) {
-        typeCounts['Environmental Hazard'] = typeCounts['Environmental Hazard']! + 1;
-      } else {
-        typeCounts['Other'] = typeCounts['Other']! + 1;
-      }
-
-      // Severity classification
-      if (severity.contains('critical')) {
-        severityCounts['Critical'] = severityCounts['Critical']! + 1;
-        if (status != 'resolved') {
-          criticalAlerts++;
-        }
-      } else if (severity.contains('high')) {
-        severityCounts['High'] = severityCounts['High']! + 1;
-      } else if (severity.contains('medium')) {
-        severityCounts['Medium'] = severityCounts['Medium']! + 1;
-      } else if (severity.contains('low')) {
-        severityCounts['Low'] = severityCounts['Low']! + 1;
-      } else {
-        severityCounts['Unknown'] = severityCounts['Unknown']! + 1;
-      }
-
-      // Response time calculation
-      if (reportedTs != null && resolvedTs != null) {
-        final responseTime = resolvedTs.toDate().difference(reportedTs.toDate()).inMinutes;
-        totalResponseTime += responseTime;
-        respondedIncidents++;
-      }
-
-      // Critical incident tracking
-      if (severity == 'critical' && reportedTs != null) {
-        final incidentTime = reportedTs.toDate();
-        final twentyFourHoursAgo = DateTime.now().subtract(const Duration(hours: 24));
-
-        if (incidentTime.isAfter(twentyFourHoursAgo)) {
-          recentCriticalIncidents.add({
-            'id': doc.id,
-            'type': data['incidentType'],
-            'location': data['address'],
-            'time': incidentTime,
-          });
-        }
-      }
-
-      // Status counts
-      if (status == 'resolved') {
-        if (resolvedTs != null) {
-          final resolvedDate = DateTime(
-            resolvedTs.toDate().year,
-            resolvedTs.toDate().month,
-            resolvedTs.toDate().day,
-          );
-          if (resolvedDate == today) resolvedToday++;
-        }
-      } else if (status == 'under review') {
-        underReview++;
-      } else {
-        activeAlerts++;
-      }
+  void _handleWeekOffsetChange(int? value) {
+    if (value != null) {
+      setState(() => _selectedWeekOffset = value);
     }
-
-    final averageResponseTime = respondedIncidents > 0 ? totalResponseTime / respondedIncidents : 0;
-
-    return {
-      'totalIncidents': totalIncidents,
-      'resolvedToday': resolvedToday,
-      'activeAlerts': activeAlerts,
-      'underReview': underReview,
-      'criticalAlerts': criticalAlerts,
-      'typeCounts': typeCounts,
-      'severityCounts': severityCounts,
-      'averageResponseTime': averageResponseTime,
-      'respondedIncidents': respondedIncidents,
-      'recentCriticalIncidents': recentCriticalIncidents,
-    };
   }
 
-  List<EmergencyCase> _getWeeklyData(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
-    final now = DateTime.now();
-    final startOfWeek = now.subtract(Duration(days: now.weekday - 1 + (7 * _selectedWeekOffset.abs())));
-    final endOfWeek = startOfWeek.add(const Duration(days: 6));
-
-    Map<String, int> weeklyData = {
-      'Mon': 0,
-      'Tue': 0,
-      'Wed': 0,
-      'Thu': 0,
-      'Fri': 0,
-      'Sat': 0,
-      'Sun': 0,
-    };
-
-    for (var doc in docs) {
-      final data = doc.data();
-      final ts = data['timestamp'] as Timestamp?;
-      if (ts == null) continue;
-
-      final date = ts.toDate();
-      if (date.isAfter(startOfWeek.subtract(const Duration(seconds: 1))) &&
-          date.isBefore(endOfWeek.add(const Duration(days: 1)))) {
-        final weekday = _weekdayName(date.weekday);
-        weeklyData[weekday] = weeklyData[weekday]! + 1;
-      }
+  void _handleMonthOffsetChange(int? value) {
+    if (value != null) {
+      setState(() => _selectedMonthOffset = value);
     }
-
-    return weeklyData.entries.map((e) => EmergencyCase(e.key, e.value)).toList();
-  }
-
-  Map<String, int> _getMonthlyData(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
-    Map<String, int> monthlyData = {};
-
-    for (var doc in docs) {
-      final data = doc.data();
-      final ts = data['timestamp'] as Timestamp?;
-      if (ts == null) continue;
-
-      final date = ts.toDate();
-      final monthKey = DateFormat('yyyy-MM').format(date); // e.g., "2024-06"
-
-      monthlyData[monthKey] = (monthlyData[monthKey] ?? 0) + 1;
-    }
-
-    return monthlyData;
-  }
-
-  String _weekdayName(int weekday) {
-    const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    return names[weekday - 1];
   }
 
   String _getWeekLabel() {
@@ -336,147 +515,144 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     return "${_selectedWeekOffset.abs()} Weeks Ago";
   }
 
+  String _getMonthLabel() {
+    final now = DateTime.now();
+    final targetMonth = DateTime(now.year, now.month + _selectedMonthOffset);
+    return DateFormat('MMMM yyyy').format(targetMonth);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[50],
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF2C5282),
-        leading: IconButton(
-          icon: const Icon(Icons.menu, color: Colors.white),
-          onPressed: widget.onMenuPressed,
-        ),
-        title: const Text(
-          'ANALYTICS DASHBOARD',
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-            fontSize: 18,
-          ),
-        ),
-        centerTitle: true,
-        elevation: 0,
-        bottom: _isOffline
-            ? PreferredSize(
-                preferredSize: const Size.fromHeight(24),
-                child: Container(
-                  color: Colors.red,
-                  height: 24,
-                  alignment: Alignment.center,
-                  child: const Text(
-                    'You are offline',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                  ),
-                ),
-              )
-            : null,
-      ),
+      appBar: _buildAppBar(),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: _buildQuery().snapshots(),
+        stream: QueryBuilder.buildQuery(_dateRange).snapshots(),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
-            _isLoading = false;
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.error_outline, size: 48, color: Colors.red),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Error loading data\n${snapshot.error}',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.red),
-                  ),
-                ],
-              ),
-            );
+            return _buildErrorState(snapshot.error.toString());
           }
 
           if (snapshot.connectionState == ConnectionState.waiting && _isLoading) {
-            return const Center(child: CircularProgressIndicator());
+            return _buildLoadingState();
           }
 
           if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-            _isLoading = false;
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.analytics_outlined, size: 64, color: Colors.grey[300]),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'No incident data available',
-                    style: TextStyle(fontSize: 16, color: Colors.grey),
-                  ),
-                ],
-              ),
-            );
+            return _buildEmptyState();
           }
 
           final docs = snapshot.data!.docs;
-          _lastFilteredDocs = docs;
+          _lastFilteredDocs.clear();
+          _lastFilteredDocs.addAll(docs);
           _isLoading = false;
 
-          final analytics = _processIncidents(docs);
-          final weeklyData = _getWeeklyData(docs);
-          final monthlyData = _getMonthlyData(docs);
+          final analytics = AnalyticsService.processIncidents(docs);
+          final weeklyData = AnalyticsService.getWeeklyData(docs, _selectedWeekOffset);
+          final monthlyData = AnalyticsService.getMonthlyData(docs, _selectedMonthOffset);
+          final incidentTypeData = AnalyticsService.getIncidentTypeData(analytics.typeCounts);
 
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Header Section with Critical Alerts
-                _buildHeaderSection(analytics),
-                const SizedBox(height: 24),
-
-                // Statistics Cards
-                _buildStatisticsSection(analytics),
-                const SizedBox(height: 32),
-
-                // Charts Section
-                _buildChartsSection(
-                  analytics['typeCounts'] as Map<String, int>,
-                  analytics['severityCounts'] as Map<String, int>,
-                  weeklyData,
-                  monthlyData,
-                ),
-              ],
-            ),
-          );
+          return _buildContent(analytics, weeklyData, monthlyData, incidentTypeData);
         },
       ),
     );
   }
 
-  Widget _buildHeaderSection(Map<String, dynamic> analytics) {
+  PreferredSizeWidget _buildAppBar() {
+    return AppBar(
+      backgroundColor: const Color(0xFF2C5282),
+      leading: IconButton(
+        icon: const Icon(Icons.menu, color: Colors.white),
+        onPressed: widget.onMenuPressed,
+      ),
+      title: const Text(
+        'ANALYTICS DASHBOARD',
+        style: TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.bold,
+          fontSize: 18,
+        ),
+      ),
+      centerTitle: true,
+      elevation: 0,
+      bottom: _isOffline
+          ? PreferredSize(
+              preferredSize: const Size.fromHeight(24),
+              child: Container(
+                color: Colors.red,
+                height: 24,
+                alignment: Alignment.center,
+                child: const Text(
+                  'You are offline',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                ),
+              ),
+            )
+          : null,
+    );
+  }
+
+  Widget _buildErrorState(String error) {
+    _isLoading = false;
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.error_outline, size: 48, color: Colors.red),
+          const SizedBox(height: 16),
+          Text(
+            'Error loading data\n$error',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.red),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoadingState() {
+    return const Center(child: CircularProgressIndicator());
+  }
+
+  Widget _buildEmptyState() {
+    _isLoading = false;
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.analytics_outlined, size: 64, color: Colors.grey[300]),
+          const SizedBox(height: 16),
+          const Text(
+            'No incident data available',
+            style: TextStyle(fontSize: 16, color: Colors.grey),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContent(AnalyticsData analytics, List<EmergencyCase> weeklyData, List<MonthlyCase> monthlyData, List<IncidentTypeCase> incidentTypeData) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildHeaderSection(analytics),
+          const SizedBox(height: 24),
+          _buildStatisticsSection(analytics),
+          const SizedBox(height: 32),
+          _buildChartsSection(weeklyData, monthlyData, incidentTypeData),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHeaderSection(AnalyticsData analytics) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (analytics['criticalAlerts'] > 0)
-          Container(
-            padding: const EdgeInsets.all(12),
-            margin: const EdgeInsets.only(bottom: 16),
-            decoration: BoxDecoration(
-              color: Colors.red[50],
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.red),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.warning, color: Colors.red[800]),
-                const SizedBox(width: 8),
-                Text(
-                  '${analytics['criticalAlerts']} CRITICAL ALERTS ACTIVE',
-                  style: TextStyle(
-                    color: Colors.red[800],
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
+        if (analytics.criticalAlerts > 0)
+          _buildCriticalAlertsBanner(analytics.criticalAlerts),
+        
         Row(
           children: [
             const Expanded(
@@ -486,19 +662,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                 subtitle: 'Real-time incident statistics and trends',
               ),
             ),
-            // Date Range Picker
-            OutlinedButton.icon(
-              onPressed: _pickDateRange,
-              icon: const Icon(Icons.calendar_today, size: 18),
-              label: Text(_dateRangeLabel()),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                side: BorderSide(color: Colors.blue[800]!),
-              ),
-            ),
+            _buildDateRangePicker(),
             if (_dateRange != null) ...[
               const SizedBox(width: 8),
               IconButton(
@@ -513,60 +677,49 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     );
   }
 
-  Widget _buildStatisticsSection(Map<String, dynamic> analytics) {
-    return Wrap(
-      spacing: 16,
-      runSpacing: 16,
-      children: [
-        _buildStatCard(
-          'Total Incidents',
-          analytics['totalIncidents'].toString(),
-          Icons.warning_amber,
-          Colors.orange,
-        ),
-        _buildStatCard(
-          'Active Alerts',
-          analytics['activeAlerts'].toString(),
-          Icons.error,
-          Colors.red,
-        ),
-        _buildStatCard(
-          'Resolved Today',
-          analytics['resolvedToday'].toString(),
-          Icons.check_circle,
-          Colors.green,
-        ),
-        _buildStatCard(
-          'Under Review',
-          analytics['underReview'].toString(),
-          Icons.visibility,
-          Colors.purple,
-        ),
-        _buildStatCard(
-          'Critical Alerts',
-          analytics['criticalAlerts'].toString(),
-          Icons.warning,
-          Colors.red[800]!,
-        ),
-        _buildStatCard(
-          'Avg Response Time',
-          '${(analytics['averageResponseTime'] as double).toStringAsFixed(1)} min',
-          Icons.timer,
-          Colors.blue,
-        ),
-        _buildStatCard(
-          'Responded Incidents',
-          analytics['respondedIncidents'].toString(),
-          Icons.emergency,
-          Colors.green,
-        ),
-      ],
+  Widget _buildCriticalAlertsBanner(int criticalAlerts) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        color: Colors.red[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.red),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.warning, color: Colors.red[800]),
+          const SizedBox(width: 8),
+          Text(
+            '$criticalAlerts CRITICAL ALERTS ACTIVE',
+            style: TextStyle(
+              color: Colors.red[800],
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
-  Widget _buildStatCard(String title, String value, IconData icon, Color color) {
+  Widget _buildDateRangePicker() {
+    return OutlinedButton.icon(
+      onPressed: _pickDateRange,
+      icon: const Icon(Icons.calendar_today, size: 18),
+      label: Text(DateRangeService.getDateRangeLabel(_dateRange)),
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        side: BorderSide(color: Colors.blue[800]!),
+      ),
+    );
+  }
+
+  Widget _buildStatisticsSection(AnalyticsData analytics) {
     return Container(
-      width: 220,
+      width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Colors.white,
@@ -579,17 +732,105 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           ),
         ],
       ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Key Metrics',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Colors.black87,
+            ),
+          ),
+          const SizedBox(height: 16),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _buildCompactStatCard(
+                  'Total Incidents',
+                  analytics.totalIncidents.toString(),
+                  Icons.warning_amber,
+                  Colors.orange,
+                ),
+                const SizedBox(width: 16),
+                _buildCompactStatCard(
+                  'Active Alerts',
+                  analytics.activeAlerts.toString(),
+                  Icons.error,
+                  Colors.red,
+                ),
+                const SizedBox(width: 16),
+                _buildCompactStatCard(
+                  'Resolved Today',
+                  analytics.resolvedToday.toString(),
+                  Icons.check_circle,
+                  Colors.green,
+                ),
+                const SizedBox(width: 16),
+                _buildCompactStatCard(
+                  'Under Review',
+                  analytics.underReview.toString(),
+                  Icons.visibility,
+                  Colors.purple,
+                ),
+                const SizedBox(width: 16),
+                _buildCompactStatCard(
+                  'Critical Alerts',
+                  analytics.criticalAlerts.toString(),
+                  Icons.warning,
+                  Colors.red[800]!,
+                ),
+                const SizedBox(width: 16),
+                _buildCompactStatCard(
+                  'Avg Response Time',
+                  _formatResponseTime(analytics.averageResponseTime),
+                  Icons.timer,
+                  Colors.blue,
+                ),
+                const SizedBox(width: 16),
+                _buildCompactStatCard(
+                  'Responded Incidents',
+                  analytics.respondedIncidents.toString(),
+                  Icons.emergency,
+                  Colors.green,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCompactStatCard(String title, String value, IconData icon, Color color) {
+    return Container(
+      width: 160,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey[200]!),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
       child: Row(
         children: [
           Container(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
               color: color.withOpacity(0.1),
               shape: BoxShape.circle,
             ),
-            child: Icon(icon, color: color, size: 24),
+            child: Icon(icon, color: color, size: 20),
           ),
-          const SizedBox(width: 16),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -597,16 +838,17 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                 Text(
                   title,
                   style: const TextStyle(
-                    fontSize: 14,
+                    fontSize: 12,
                     color: Colors.grey,
                     fontWeight: FontWeight.w500,
                   ),
+                  maxLines: 2,
                 ),
                 const SizedBox(height: 4),
                 Text(
                   value,
                   style: const TextStyle(
-                    fontSize: 24,
+                    fontSize: 18,
                     fontWeight: FontWeight.bold,
                     color: Colors.black87,
                   ),
@@ -619,303 +861,307 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     );
   }
 
- Widget _buildChartsSection(
-  Map<String, int> typeCounts,
-  Map<String, int> severityCounts,
-  List<EmergencyCase> weeklyData,
-  Map<String, int> monthlyData,
-) {
-  return Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      // Weekly Chart
-      Card(
-        elevation: 2,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Text(
-                    'Weekly Incident Trends',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const Spacer(),
-                  DropdownButton<int>(
-                    value: _selectedWeekOffset,
-                    items: const [
-                      DropdownMenuItem(value: 0, child: Text('This Week')),
-                      DropdownMenuItem(value: -1, child: Text('Last Week')),
-                      DropdownMenuItem(value: -2, child: Text('2 Weeks Ago')),
-                      DropdownMenuItem(value: -3, child: Text('3 Weeks Ago')),
-                    ],
-                    onChanged: (value) {
-                      if (value != null) {
-                        setState(() => _selectedWeekOffset = value);
-                      }
-                    },
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _getWeekLabel(),
-                style: const TextStyle(color: Colors.grey, fontSize: 14),
-              ),
-              const SizedBox(height: 20),
-              SizedBox(
-                height: 300,
-                child: SfCartesianChart(
-                  primaryXAxis: CategoryAxis(
-                    labelStyle: const TextStyle(fontSize: 12),
-                  ),
-                  primaryYAxis: NumericAxis(
-                    labelStyle: const TextStyle(fontSize: 12),
-                  ),
-                  series: <CartesianSeries>[
-                    ColumnSeries<EmergencyCase, String>(
-                      dataSource: weeklyData,
-                      xValueMapper: (data, _) => data.day,
-                      yValueMapper: (data, _) => data.count,
-                      color: Colors.blue[800],
-                      dataLabelSettings: const DataLabelSettings(
-                        isVisible: true,
-                        textStyle: TextStyle(fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-      const SizedBox(height: 24),
-
-      // Monthly Chart
-      Card(
-        elevation: 2,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Monthly Incident Trends',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Incidents reported per month',
-                style: TextStyle(color: Colors.grey, fontSize: 14),
-              ),
-              const SizedBox(height: 20),
-              SizedBox(
-                height: 300,
-                child: SfCartesianChart(
-                  primaryXAxis: CategoryAxis(
-                    labelRotation: 45,
-                    labelStyle: const TextStyle(fontSize: 12),
-                  ),
-                  primaryYAxis: NumericAxis(
-                    labelStyle: const TextStyle(fontSize: 12),
-                  ),
-                  series: <CartesianSeries>[
-                    ColumnSeries<MapEntry<String, int>, String>(
-                      dataSource: monthlyData.entries.toList()
-                        ..sort((a, b) => a.key.compareTo(b.key)),
-                      xValueMapper: (entry, _) => entry.key,
-                      yValueMapper: (entry, _) => entry.value,
-                      color: Colors.teal[700],
-                      dataLabelSettings: const DataLabelSettings(
-                        isVisible: true,
-                        textStyle: TextStyle(fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-      const SizedBox(height: 24),
-
-      // Incident Type Distribution Chart
-      Card(
-        elevation: 2,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Incident Type Distribution',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Breakdown by incident category',
-                style: TextStyle(color: Colors.grey, fontSize: 14),
-              ),
-              const SizedBox(height: 20),
-              SizedBox(
-                height: 300,
-                child: SfCircularChart(
-                  legend: Legend(
-                    isVisible: true,
-                    overflowMode: LegendItemOverflowMode.wrap,
-                    textStyle: const TextStyle(fontSize: 12),
-                  ),
-                  series: <CircularSeries>[
-                    PieSeries<MapEntry<String, int>, String>(
-                      dataSource: typeCounts.entries.toList(),
-                      xValueMapper: (entry, _) => entry.key,
-                      yValueMapper: (entry, _) => entry.value,
-                      dataLabelMapper: (entry, _) => '${entry.value}',
-                      dataLabelSettings: const DataLabelSettings(
-                        isVisible: true,
-                        textStyle: TextStyle(fontSize: 12),
-                      ),
-                      pointColorMapper: (entry, _) => _getColorForType(entry.key),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-      const SizedBox(height: 24),
-
-      // User Count Section (added here)
-      _buildUserCountSection(),
-    ],
-  );
-}
-  
-Widget _buildUserCountSection() {
-  return StreamBuilder<QuerySnapshot>(
-    stream: FirebaseFirestore.instance.collection('users').snapshots(),
-    builder: (context, snapshot) {
-      if (snapshot.hasError) {
-        return Card(
-          elevation: 2,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Center(
-              child: Text('Error loading user data: ${snapshot.error}'),
-            ),
-          ),
-        );
-      }
-
-      if (snapshot.connectionState == ConnectionState.waiting) {
-        return Card(
-          elevation: 2,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: const Center(child: CircularProgressIndicator()),
-          ),
-        );
-      }
-
-      final userCount = snapshot.data?.docs.length ?? 0;
-
-      return Card(
-        elevation: 2,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'App Users',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Number of registered users in the app',
-                style: TextStyle(color: Colors.grey, fontSize: 14),
-              ),
-              const SizedBox(height: 20),
-              Center(
-                child: Text(
-                  userCount.toString(),
-                  style: const TextStyle(
-                    fontSize: 48,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.blueAccent,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    },
-  );
-}
-
-  Color _getColorForType(String type) {
-    switch (type) {
-      case 'Fire':
-        return Colors.red;
-      case 'Accident':
-        return Colors.orange;
-      case 'Flood':
-        return Colors.blue;
-      case 'Earthquake':
-        return Colors.brown;
-      case 'Tsunami':
-        return Colors.blue[900]!;
-      case 'Hurricane':
-        return Colors.purple;
-      case 'Medical Emergency':
-        return Colors.pink;
-      case 'Civil Unrest':
-        return Colors.red[900]!;
-      case 'Infrastructure Failure':
-        return Colors.grey;
-      case 'Environmental Hazard':
-        return Colors.green;
-      default:
-        return Colors.grey;
+  String _formatResponseTime(double minutes) {
+    if (minutes < 1) {
+      return '<1 min';
+    } else if (minutes < 60) {
+      return '${minutes.toStringAsFixed(0)} min';
+    } else if (minutes < 1440) {
+      final hours = minutes / 60;
+      return '${hours.toStringAsFixed(1)} h';
+    } else {
+      final days = minutes / 1440;
+      return '${days.toStringAsFixed(1)} d';
     }
   }
 
-  Color _getColorForSeverity(String severity) {
-    switch (severity) {
-      case 'Critical':
-        return Colors.red;
-      case 'High':
-        return Colors.orange;
-      case 'Medium':
-        return Colors.yellow;
-      case 'Low':
-        return Colors.green;
-      default:
-        return Colors.grey;
-    }
+  Widget _buildChartsSection(
+    List<EmergencyCase> weeklyData,
+    List<MonthlyCase> monthlyData,
+    List<IncidentTypeCase> incidentTypeData,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildWeeklyChart(weeklyData),
+        const SizedBox(height: 24),
+        _buildMonthlyChart(monthlyData),
+        const SizedBox(height: 24),
+        _buildIncidentTypeChart(incidentTypeData),
+        const SizedBox(height: 24),
+        _buildUserCountSection(),
+      ],
+    );
+  }
+
+  Widget _buildWeeklyChart(List<EmergencyCase> weeklyData) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Text(
+                  'Weekly Incident Trends',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const Spacer(),
+                DropdownButton<int>(
+                  value: _selectedWeekOffset,
+                  items: const [
+                    DropdownMenuItem(value: 0, child: Text('This Week')),
+                    DropdownMenuItem(value: -1, child: Text('Last Week')),
+                    DropdownMenuItem(value: -2, child: Text('2 Weeks Ago')),
+                    DropdownMenuItem(value: -3, child: Text('3 Weeks Ago')),
+                  ],
+                  onChanged: _handleWeekOffsetChange,
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _getWeekLabel(),
+              style: const TextStyle(color: Colors.grey, fontSize: 14),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              height: 300,
+              child: SfCartesianChart(
+                primaryXAxis: CategoryAxis(
+                  labelStyle: const TextStyle(fontSize: 12),
+                ),
+                primaryYAxis: NumericAxis(
+                  labelStyle: const TextStyle(fontSize: 12),
+                  minimum: 0,
+                ),
+                series: <CartesianSeries>[
+                  LineSeries<EmergencyCase, String>(
+                    dataSource: weeklyData,
+                    xValueMapper: (data, _) => data.day,
+                    yValueMapper: (data, _) => data.count,
+                    color: Colors.blue[800],
+                    markerSettings: const MarkerSettings(isVisible: true),
+                    dataLabelSettings: const DataLabelSettings(
+                      isVisible: true,
+                      textStyle: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+                tooltipBehavior: TooltipBehavior(enable: true),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMonthlyChart(List<MonthlyCase> monthlyData) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Text(
+                  'Monthly Incident Report',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const Spacer(),
+                DropdownButton<int>(
+                  value: _selectedMonthOffset,
+                  items: [
+                    DropdownMenuItem(value: 0, child: Text(DateFormat('MMMM yyyy').format(DateTime.now()))),
+                    DropdownMenuItem(value: -1, child: Text(DateFormat('MMMM yyyy').format(DateTime(DateTime.now().year, DateTime.now().month - 1)))),
+                    DropdownMenuItem(value: -2, child: Text(DateFormat('MMMM yyyy').format(DateTime(DateTime.now().year, DateTime.now().month - 2)))),
+                    DropdownMenuItem(value: -3, child: Text(DateFormat('MMMM yyyy').format(DateTime(DateTime.now().year, DateTime.now().month - 3)))),
+                  ],
+                  onChanged: _handleMonthOffsetChange,
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _getMonthLabel(),
+              style: const TextStyle(color: Colors.grey, fontSize: 14),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              height: 300,
+              child: SfCartesianChart(
+                primaryXAxis: CategoryAxis(
+                  labelStyle: const TextStyle(fontSize: 12),
+                ),
+                primaryYAxis: NumericAxis(
+                  labelStyle: const TextStyle(fontSize: 12),
+                  minimum: 0,
+                ),
+                series: <CartesianSeries>[
+                  ColumnSeries<MonthlyCase, String>(
+                    dataSource: monthlyData,
+                    xValueMapper: (data, _) => data.month,
+                    yValueMapper: (data, _) => data.count,
+                    color: Colors.teal[700],
+                    dataLabelSettings: const DataLabelSettings(
+                      isVisible: true,
+                      textStyle: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+                tooltipBehavior: TooltipBehavior(enable: true),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildIncidentTypeChart(List<IncidentTypeCase> incidentTypeData) {
+    final totalCount = incidentTypeData.fold(0, (previousValue, item) => previousValue + item.count);
+    
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Incident Type Distribution',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Total: $totalCount incidents',
+              style: const TextStyle(color: Colors.grey, fontSize: 14),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              height: 300,
+              child: SfCircularChart(
+                legend: Legend(
+                  isVisible: true,
+                  overflowMode: LegendItemOverflowMode.wrap,
+                  textStyle: const TextStyle(fontSize: 12),
+                  position: LegendPosition.bottom,
+                ),
+                series: <CircularSeries>[
+                  DoughnutSeries<IncidentTypeCase, String>(
+                    dataSource: incidentTypeData,
+                    xValueMapper: (data, _) => data.type,
+                    yValueMapper: (data, _) => data.count,
+                    pointColorMapper: (data, _) => data.color,
+                    dataLabelMapper: (data, _) => '${data.count}',
+                    dataLabelSettings: const DataLabelSettings(
+                      isVisible: true,
+                      textStyle: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                      labelPosition: ChartDataLabelPosition.outside,
+                    ),
+                    innerRadius: '60%',
+                  ),
+                ],
+                tooltipBehavior: TooltipBehavior(enable: true),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUserCountSection() {
+    return StreamBuilder<QuerySnapshot>(
+      stream: UserService.getUserCountStream(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _buildErrorCard('Error loading user data: ${snapshot.error}');
+        }
+
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _buildLoadingCard();
+        }
+
+        final userCount = snapshot.data?.docs.length ?? 0;
+
+        return Card(
+          elevation: 2,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'App Users',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Number of registered users in the app',
+                  style: TextStyle(color: Colors.grey, fontSize: 14),
+                ),
+                const SizedBox(height: 20),
+                Center(
+                  child: Text(
+                    userCount.toString(),
+                    style: const TextStyle(
+                      fontSize: 48,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blueAccent,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildErrorCard(String error) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Center(
+          child: Text(error),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLoadingCard() {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: const Padding(
+        padding: EdgeInsets.all(20),
+        child: Center(child: CircularProgressIndicator()),
+      ),
+    );
   }
 }
