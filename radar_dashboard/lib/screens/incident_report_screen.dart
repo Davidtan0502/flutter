@@ -528,45 +528,46 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
   }
 
   // UI Components
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: _buildAppBar(),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              IncidentReportConstants.colorScheme['primaryLight']!,
-              IncidentReportConstants.colorScheme['secondary']!
-            ],
-          ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(20.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildSearchBar(),
-              const SizedBox(height: 20),
-              _buildFilterSection(),
-              const SizedBox(height: 16),
-              if (_isMultiSelectMode) _buildBatchActions(),
-              const SizedBox(height: 16),
-              Expanded(
-                child: FadeTransition(
-                  opacity: _fadeAnimation,
-                  child: _buildEmergencyList(),
-                ),
-              ),
-            ],
-          ),
+@override
+Widget build(BuildContext context) {
+  return Scaffold(
+    appBar: _buildAppBar(),
+    body: Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            IncidentReportConstants.colorScheme['primaryLight']!,
+            IncidentReportConstants.colorScheme['secondary']!
+          ],
         ),
       ),
-      floatingActionButton: _buildFloatingActionButton(),
-    );
-  }
+      child: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildSearchBar(),
+            const SizedBox(height: 20),
+            _buildFilterSection(),
+            const SizedBox(height: 20), // Increased from 16 to 20
+            if (_isMultiSelectMode) _buildBatchActions(),
+            if (_isMultiSelectMode) const SizedBox(height: 20), // Added spacing after batch actions
+            const SizedBox(height: 8), // Small spacing before the list
+            Expanded(
+              child: FadeTransition(
+                opacity: _fadeAnimation,
+                child: _buildEmergencyList(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+    floatingActionButton: _buildFloatingActionButton(),
+  );
+}
 
   AppBar _buildAppBar() {
     return AppBar(
@@ -829,40 +830,47 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     );
   }
 
-  Widget _buildGroupedList(Map<String, List<QueryDocumentSnapshot>> groupedDocs) {
-    final sortedDates = groupedDocs.keys.toList()..sort((a, b) => b.compareTo(a));
-    
-    return ListView.builder(
-      controller: _scrollController,
-      padding: const EdgeInsets.only(bottom: 16),
-      itemCount: _calculateGroupedItemCount(groupedDocs, sortedDates),
-      itemBuilder: (context, index) {
-        var currentIndex = 0;
+Widget _buildGroupedList(Map<String, List<QueryDocumentSnapshot>> groupedDocs) {
+  final sortedDates = groupedDocs.keys.toList()..sort((a, b) => b.compareTo(a));
+  
+  return ListView.builder(
+    controller: _scrollController,
+    padding: const EdgeInsets.only(bottom: 16),
+    itemCount: _calculateGroupedItemCount(groupedDocs, sortedDates),
+    itemBuilder: (context, index) {
+      var currentIndex = 0;
+      
+      for (final date in sortedDates) {
+        final docs = groupedDocs[date]!;
         
-        for (final date in sortedDates) {
-          final docs = groupedDocs[date]!;
-          
-          // Date header
+        // Date header
+        if (index == currentIndex) {
+          return Padding(
+            padding: const EdgeInsets.only(top: 16, bottom: 8),
+            child: _buildDateHeader(date),
+          );
+        }
+        currentIndex++;
+        
+        // Documents for this date
+        for (int i = 0; i < docs.length; i++) {
           if (index == currentIndex) {
-            return _buildDateHeader(date);
-          }
-          currentIndex++;
-          
-          // Documents for this date
-          for (int i = 0; i < docs.length; i++) {
-            if (index == currentIndex) {
-              final doc = docs[i];
-              final incident = IncidentData.fromDocument(doc);
-              
-              if (!kIsWeb) {
-                for (final url in incident.imageUrls) {
-                  if (url is String) {
-                    DefaultCacheManager().getSingleFile(url);
-                  }
+            final doc = docs[i];
+            final incident = IncidentData.fromDocument(doc);
+            
+            if (!kIsWeb) {
+              for (final url in incident.imageUrls) {
+                if (url is String) {
+                  DefaultCacheManager().getSingleFile(url);
                 }
               }
-              
-              return IncidentCard(
+            }
+            
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: i == docs.length - 1 ? 16.0 : 8.0, // More space after last item in group
+              ),
+              child: IncidentCard(
                 incident: incident,
                 onTap: () => _showEmergencyDetails(doc),
                 userRole: widget.userRole,
@@ -871,16 +879,71 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
                 onSelect: () => _selectIncident(doc.id),
                 onDelete: () => _deleteIncident(doc.id),
                 showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
-              );
-            }
-            currentIndex++;
+              ),
+            );
           }
+          currentIndex++;
         }
-        
-        return const SizedBox.shrink();
-      },
-    );
-  }
+      }
+      
+      return const SizedBox.shrink();
+    },
+  );
+}
+
+Widget _buildDateHeader(String dateKey) {
+  final date = dateKey == 'Unknown Date' 
+      ? 'Unknown Date'
+      : DateFormat('MMMM d, yyyy').format(DateTime.parse(dateKey));
+  
+  return Container(
+    padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20), // Increased vertical padding
+    decoration: BoxDecoration(
+      color: IncidentReportConstants.colorScheme['primaryLight'],
+      borderRadius: BorderRadius.circular(12), // Slightly larger radius
+      border: Border.all(
+        color: IncidentReportConstants.colorScheme['secondary']!,
+        width: 1.5, // Slightly thicker border
+      ),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withOpacity(0.1),
+          blurRadius: 8,
+          offset: const Offset(0, 2),
+        ),
+      ],
+    ),
+    child: Row(
+      children: [
+        Icon(
+          Icons.calendar_today_rounded, 
+          size: 18, 
+          color: IncidentReportConstants.colorScheme['primary'],
+        ),
+        const SizedBox(width: 12), // Increased spacing
+        Expanded(
+          child: Text(
+            date,
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: IncidentReportConstants.colorScheme['primary'],
+              fontSize: 16, // Slightly larger font
+            ),
+          ),
+        ),
+        const Spacer(),
+        Text(
+          _getDaySuffix(DateTime.parse(dateKey)),
+          style: TextStyle(
+            color: IncidentReportConstants.colorScheme['primaryDark'],
+            fontSize: 14, // Slightly larger font
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    ),
+  );
+}
 
   int _calculateGroupedItemCount(Map<String, List<QueryDocumentSnapshot>> groupedDocs, List<String> sortedDates) {
     int count = groupedDocs.length; // Date headers
@@ -889,45 +952,6 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     }
     return count;
   }
-
-  Widget _buildDateHeader(String dateKey) {
-    final date = dateKey == 'Unknown Date' 
-        ? 'Unknown Date'
-        : DateFormat('MMMM d, yyyy').format(DateTime.parse(dateKey));
-    
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-      margin: const EdgeInsets.only(top: 16, bottom: 8),
-      decoration: BoxDecoration(
-        color: IncidentReportConstants.colorScheme['primaryLight'],
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: IncidentReportConstants.colorScheme['secondary']!),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.calendar_today_rounded, size: 16, color: IncidentReportConstants.colorScheme['primary']),
-          const SizedBox(width: 8),
-          Text(
-            date,
-            style: TextStyle(
-              fontWeight: FontWeight.w700,
-              color: IncidentReportConstants.colorScheme['primary'],
-              fontSize: 14,
-            ),
-          ),
-          const Spacer(),
-          Text(
-            _getDaySuffix(DateTime.parse(dateKey)),
-            style: TextStyle(
-              color: IncidentReportConstants.colorScheme['primaryDark'],
-              fontSize: 12,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   String _getDaySuffix(DateTime date) {
     final day = date.day;
     if (day >= 11 && day <= 13) return '${day}th';
@@ -939,25 +963,27 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     }
   }
 
-  Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
-    return ListView.separated(
-      controller: _scrollController,
-      padding: const EdgeInsets.only(bottom: 16),
-      itemCount: filteredDocs.length,
-      separatorBuilder: (context, index) => const SizedBox(height: 12),
-      itemBuilder: (context, index) {
-        final doc = filteredDocs[index];
-        final incident = IncidentData.fromDocument(doc);
-        
-        if (!kIsWeb) {
-          for (final url in incident.imageUrls) {
-            if (url is String) {
-              DefaultCacheManager().getSingleFile(url);
-            }
+Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
+  return ListView.separated(
+    controller: _scrollController,
+    padding: const EdgeInsets.only(bottom: 16),
+    itemCount: filteredDocs.length,
+    separatorBuilder: (context, index) => const SizedBox(height: 16), // Increased from 12 to 16
+    itemBuilder: (context, index) {
+      final doc = filteredDocs[index];
+      final incident = IncidentData.fromDocument(doc);
+      
+      if (!kIsWeb) {
+        for (final url in incident.imageUrls) {
+          if (url is String) {
+            DefaultCacheManager().getSingleFile(url);
           }
         }
-        
-        return IncidentCard(
+      }
+      
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4.0), // Added horizontal padding
+        child: IncidentCard(
           incident: incident,
           onTap: () => _showEmergencyDetails(doc),
           userRole: widget.userRole,
@@ -966,10 +992,11 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
           onSelect: () => _selectIncident(doc.id),
           onDelete: () => _deleteIncident(doc.id),
           showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
-        );
-      },
-    );
-  }
+        ),
+      );
+    },
+  );
+}
 
   Widget _buildErrorState(String error) {
     return Center(
@@ -2019,126 +2046,148 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
     }
   }
 
-  Widget _buildAdminStatusSection() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.grey[50],
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'UPDATE STATUS',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-              color: IncidentReportConstants.colorScheme['primaryDark'],
-            ),
-          ),
-          const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
-            value: _selectedStatus,
-            items: IncidentReportConstants.statusOptions.map((status) {
-              final style = StyleService.getStatusStyle(status);
-              return DropdownMenuItem(
-                value: status,
-                child: Row(
-                  children: [
-                    Icon(style['icon'] as IconData, color: style['color'] as Color),
-                    const SizedBox(width: 12),
-                    Text(style['label'] as String),
-                  ],
-                ),
-              );
-            }).toList(),
-            onChanged: (value) async {
-              if (value != null && value != _selectedStatus) {
-                if (value == 'declined') {
-                  final confirmed = await showDialog<bool>(
-                    context: context,
-                    builder: (context) => AlertDialog(
-                      title: const Text('Confirm Decline'),
-                      content: const Text('Are you sure you want to decline this incident? This action cannot be undone.'),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context, false),
-                          child: const Text('Cancel'),
-                        ),
-                        TextButton(
-                          onPressed: () => Navigator.pop(context, true),
-                          child: Text('Decline', style: TextStyle(color: IncidentReportConstants.colorScheme['error'])),
-                        ),
-                      ],
-                    ),
-                  );
-                  
-                  if (confirmed != true) {
-                    return;
-                  }
-                }
-                
-                setState(() {
-                  _selectedStatus = value;
-                });
-              }
-            },
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              filled: true,
-              fillColor: Colors.white,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'ADD NOTE',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.grey[600],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: _noteController,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                    hintText: "Add a note about this update...",
-                    border: OutlineInputBorder(),
-                    filled: true,
-                    fillColor: Colors.white,
-                  ),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please add a note';
-                    }
-                    return null;
-                  },
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: _updateStatus,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: IncidentReportConstants.colorScheme['primary'],
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
-              child: const Text('SAVE UPDATE', style: TextStyle(color: Colors.white)),
-            ),
-          ),
-        ],
+Widget _buildAdminStatusSection() {
+  // Ensure _selectedStatus is valid and exists in status options
+  if (!IncidentReportConstants.statusOptions.contains(_selectedStatus)) {
+    _selectedStatus = widget.incident.status;
+  }
+
+  // Create dropdown items - remove the current status to avoid duplicates
+  final availableStatusOptions = IncidentReportConstants.statusOptions
+      .where((status) => status != widget.incident.status)
+      .toList();
+
+  // Add the current status at the beginning to show it as selected
+  availableStatusOptions.insert(0, widget.incident.status);
+
+  final dropdownItems = <DropdownMenuItem<String>>[];
+  for (final status in availableStatusOptions) {
+    final style = StyleService.getStatusStyle(status);
+    dropdownItems.add(
+      DropdownMenuItem<String>(
+        value: status,
+        child: Row(
+          children: [
+            Icon(style['icon'] as IconData, color: style['color'] as Color),
+            const SizedBox(width: 12),
+            Text(style['label'] as String),
+          ],
+        ),
       ),
     );
+  }
+
+  return Container(
+    padding: const EdgeInsets.all(20),
+    decoration: BoxDecoration(
+      color: Colors.grey[50],
+      borderRadius: BorderRadius.circular(16),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'UPDATE STATUS',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: IncidentReportConstants.colorScheme['primaryDark'],
+          ),
+        ),
+        const SizedBox(height: 16),
+        DropdownButtonFormField<String>(
+          value: _selectedStatus,
+          items: dropdownItems,
+          onChanged: (String? newValue) {
+            if (newValue != null) {
+              _handleStatusChange(newValue);
+            }
+          },
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            filled: true,
+            fillColor: Colors.white,
+          ),
+        ),
+        const SizedBox(height: 16),
+        Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'ADD NOTE',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.grey[600],
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _noteController,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  hintText: "Add a note about this update...",
+                  border: OutlineInputBorder(),
+                  filled: true,
+                  fillColor: Colors.white,
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please add a note';
+                  }
+                  return null;
+                },
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            onPressed: _updateStatus,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: IncidentReportConstants.colorScheme['primary'],
+              padding: const EdgeInsets.symmetric(vertical: 16),
+            ),
+            child: const Text('SAVE UPDATE', style: TextStyle(color: Colors.white)),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+  Future<void> _handleStatusChange(String newValue) async {
+    if (newValue == 'declined') {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Confirm Decline'),
+          content: const Text('Are you sure you want to decline this incident? This action cannot be undone.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text('Decline', style: TextStyle(color: IncidentReportConstants.colorScheme['error'])),
+            ),
+          ],
+        ),
+      );
+      
+      if (confirmed != true) {
+        return;
+      }
+    }
+    
+    setState(() {
+      _selectedStatus = newValue;
+    });
   }
 
   Widget _buildUserStatusSection() {

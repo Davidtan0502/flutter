@@ -1190,125 +1190,138 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
         : _buildUserStatusSection();
   }
 
-  Widget _buildAdminStatusSection() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.grey[50],
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'UPDATE STATUS',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-              color: IncidentConstants.colorScheme['primaryDark'],
-            ),
-          ),
-          const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
-            initialValue: _selectedStatus,
-            items: IncidentConstants.statusOptions.map((status) {
-              final style = StyleService.getStatusStyle(status);
-              return DropdownMenuItem(
-                value: status,
-                child: Row(
-                  children: [
-                    Icon(style['icon'] as IconData, color: style['color'] as Color),
-                    const SizedBox(width: 12),
-                    Text(style['label'] as String),
-                  ],
-                ),
-              );
-            }).toList(),
-            onChanged: (value) async {
-              if (value != null && value != _selectedStatus) {
-                if (value == 'declined') {
-                  final confirmed = await showDialog<bool>(
-                    context: context,
-                    builder: (context) => AlertDialog(
-                      title: const Text('Confirm Decline'),
-                      content: const Text('Are you sure you want to decline this incident? This action cannot be undone.'),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context, false),
-                          child: const Text('Cancel'),
-                        ),
-                        TextButton(
-                          onPressed: () => Navigator.pop(context, true),
-                          child: Text('Decline', style: TextStyle(color: IncidentConstants.colorScheme['error'])),
-                        ),
-                      ],
-                    ),
-                  );
-                  
-                  if (confirmed != true) return;
-                }
-                
-                setState(() {
-                  _selectedStatus = value;
-                });
-              }
-            },
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              filled: true,
-              fillColor: Colors.white,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'ADD NOTE',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.grey[600],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: _noteController,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                    hintText: "Add a note about this update...",
-                    border: OutlineInputBorder(),
-                    filled: true,
-                    fillColor: Colors.white,
-                  ),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please add a note';
-                    }
-                    return null;
-                  },
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: _updateStatus,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: IncidentConstants.colorScheme['primary'],
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
-              child: const Text('SAVE UPDATE', style: TextStyle(color: Colors.white)),
-            ),
-          ),
-        ],
-      ),
-    );
+Widget _buildAdminStatusSection() {
+  // Ensure _selectedStatus is valid and exists in status options
+  if (!IncidentConstants.statusOptions.contains(_selectedStatus)) {
+    _selectedStatus = widget.incident.status;
   }
+
+  // Create dropdown items - remove the current status to avoid duplicates
+  final availableStatusOptions = IncidentConstants.statusOptions
+      .where((status) => status != widget.incident.status)
+      .toList();
+
+  // Add the current status at the beginning to show it as selected
+  availableStatusOptions.insert(0, widget.incident.status);
+
+  return Container(
+    padding: const EdgeInsets.all(20),
+    decoration: BoxDecoration(
+      color: Colors.grey[50],
+      borderRadius: BorderRadius.circular(16),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'UPDATE STATUS',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: IncidentConstants.colorScheme['primaryDark'],
+          ),
+        ),
+        const SizedBox(height: 16),
+        DropdownButtonFormField<String>(
+          value: _selectedStatus,
+          items: availableStatusOptions.map((status) {
+            final style = StyleService.getStatusStyle(status);
+            return DropdownMenuItem<String>(
+              value: status,
+              child: Row(
+                children: [
+                  Icon(style['icon'] as IconData, color: style['color'] as Color),
+                  const SizedBox(width: 12),
+                  Text(style['label'] as String),
+                ],
+              ),
+            );
+          }).toList(),
+          onChanged: (value) async {
+            if (value != null && value != _selectedStatus) {
+              if (value == 'declined') {
+                final confirmed = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('Confirm Decline'),
+                    content: const Text('Are you sure you want to decline this incident? This action cannot be undone.'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancel'),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: Text('Decline', style: TextStyle(color: IncidentConstants.colorScheme['error'])),
+                      ),
+                    ],
+                  ),
+                );
+                
+                if (confirmed != true) return;
+              }
+              
+              setState(() {
+                _selectedStatus = value;
+              });
+            }
+          },
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            filled: true,
+            fillColor: Colors.white,
+          ),
+        ),
+        const SizedBox(height: 16),
+        Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'ADD NOTE',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.grey[600],
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _noteController,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  hintText: "Add a note about this update...",
+                  border: OutlineInputBorder(),
+                  filled: true,
+                  fillColor: Colors.white,
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please add a note';
+                  }
+                  return null;
+                },
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            onPressed: _updateStatus,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: IncidentConstants.colorScheme['primary'],
+              padding: const EdgeInsets.symmetric(vertical: 16),
+            ),
+            child: const Text('SAVE UPDATE', style: TextStyle(color: Colors.white)),
+          ),
+        ),
+      ],
+    ),
+  );
+}
 
   Widget _buildUserStatusSection() {
     final statusStyle = StyleService.getStatusStyle(widget.incident.status);
