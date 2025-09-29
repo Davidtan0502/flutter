@@ -203,11 +203,6 @@ class _RadarAppUserCardState extends State<RadarAppUserCard> {
       statusIndicator: userData.onlineStatusColor,
       additionalActions: [
         IconButton(
-          icon: const Icon(Icons.warning, size: 18),
-          onPressed: _sendEmergencyAlert,
-          tooltip: 'Send emergency alert',
-        ),
-        IconButton(
           icon: const Icon(Icons.list_alt, size: 18),
           onPressed: () => _viewUserIncidents(context),
           tooltip: 'View incidents',
@@ -587,7 +582,6 @@ class UserCardTemplate extends StatelessWidget {
           onChanged: onRoleChanged,
           items: const [
             DropdownMenuItem(value: 'viewer', child: Text('VIEWER')),
-            DropdownMenuItem(value: 'moderator', child: Text('MODERATOR')),
             DropdownMenuItem(value: 'admin', child: Text('ADMIN')),
           ],
         ),

@@ -171,12 +171,8 @@ class _DashboardUserCardState extends State<DashboardUserCard> {
     switch (role) {
       case 'admin':
         return Colors.purple;
-      case 'moderator':
-        return Colors.blue;
       case 'user':
         return Colors.green;
-      case 'viewer':
-        return Colors.teal;
       default:
         return Colors.grey;
     }
@@ -186,12 +182,8 @@ class _DashboardUserCardState extends State<DashboardUserCard> {
     switch (role) {
       case 'admin':
         return Icons.admin_panel_settings;
-      case 'moderator':
-        return Icons.security;
       case 'user':
         return Icons.person;
-      case 'viewer':
-        return Icons.visibility;
       default:
         return Icons.person;
     }
@@ -518,8 +510,6 @@ class _DashboardUserCardState extends State<DashboardUserCard> {
           onChanged: _updateUserRole,
           items: const [
             DropdownMenuItem(value: 'user', child: Text('USER')),
-            DropdownMenuItem(value: 'viewer', child: Text('VIEWER')),
-            DropdownMenuItem(value: 'moderator', child: Text('MODERATOR')),
             DropdownMenuItem(value: 'admin', child: Text('ADMIN')),
           ],
         ),
