@@ -1,6 +1,6 @@
 // users_statistics.dart
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class UsersStatisticsSection extends StatelessWidget {
   final String collection;
@@ -16,14 +16,16 @@ class UsersStatisticsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance.collection(collection).snapshots(),
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: Supabase.instance.client
+          .from(collection)
+          .stream(primaryKey: ['id']),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return _buildLoadingStats();
         }
 
-        final users = snapshot.data!.docs;
+        final users = snapshot.data!;
         final filteredUsers = systemType == 1 ? _filterRadarUsers(users) : users;
         
         return systemType == 1 
@@ -40,7 +42,7 @@ class UsersStatisticsSection extends StatelessWidget {
     );
   }
 
-  Widget _buildRadarAppStats(List<QueryDocumentSnapshot> users, int totalUsers) {
+  Widget _buildRadarAppStats(List<Map<String, dynamic>> users, int totalUsers) {
     final emergencyReports = _calculateEmergencyReports(users);
     final activeUsers = users.where((user) => _isUserActive(user)).length;
 
@@ -71,7 +73,7 @@ class UsersStatisticsSection extends StatelessWidget {
     );
   }
 
-  Widget _buildDashboardStats(List<QueryDocumentSnapshot> users) {
+  Widget _buildDashboardStats(List<Map<String, dynamic>> users) {
     final adminCount = users.where((user) => _isAdmin(user)).length;
 
     return Row(
@@ -85,15 +87,14 @@ class UsersStatisticsSection extends StatelessWidget {
   }
 
   // Helper methods
-  List<QueryDocumentSnapshot> _filterRadarUsers(List<QueryDocumentSnapshot> users) {
+  List<Map<String, dynamic>> _filterRadarUsers(List<Map<String, dynamic>> users) {
     if (searchQuery.isEmpty) return users;
     
-    return users.where((userDoc) {
-      final userData = userDoc.data() as Map<String, dynamic>;
-      final email = userData['email']?.toString().toLowerCase() ?? '';
-      final name = userData['name']?.toString().toLowerCase() ?? '';
-      final role = userData['role']?.toString().toLowerCase() ?? '';
-      final address = userData['address']?.toString().toLowerCase() ?? '';
+    return users.where((user) {
+      final email = user['email']?.toString().toLowerCase() ?? '';
+      final name = user['name']?.toString().toLowerCase() ?? '';
+      final role = user['role']?.toString().toLowerCase() ?? '';
+      final address = user['address']?.toString().toLowerCase() ?? '';
 
       return email.contains(searchQuery) ||
              name.contains(searchQuery) ||
@@ -102,24 +103,36 @@ class UsersStatisticsSection extends StatelessWidget {
     }).toList();
   }
 
-  bool _isUserActive(QueryDocumentSnapshot user) {
-    final data = user.data() as Map<String, dynamic>;
-    final lastActive = data['lastActive'] as Timestamp?;
+  bool _isUserActive(Map<String, dynamic> user) {
+    final lastActive = user['last_active'];
     if (lastActive == null) return false;
+    
+    DateTime lastActiveTime;
+    
+    // Handle different timestamp formats
+    if (lastActive is String) {
+      final parsed = DateTime.tryParse(lastActive);
+      if (parsed == null) return false;
+      lastActiveTime = parsed;
+    } else if (lastActive is DateTime) {
+      lastActiveTime = lastActive;
+    } else {
+      return false;
+    }
+    
     final twentyFourHoursAgo = DateTime.now().subtract(const Duration(hours: 24));
-    return lastActive.toDate().isAfter(twentyFourHoursAgo);
+    return lastActiveTime.isAfter(twentyFourHoursAgo);
   }
 
-  int _calculateEmergencyReports(List<QueryDocumentSnapshot> users) {
+  int _calculateEmergencyReports(List<Map<String, dynamic>> users) {
     return users.fold<int>(0, (total, user) {
-      final data = user.data() as Map<String, dynamic>;
-      return total + ((data['emergencyReports'] ?? 0) as int);
+      final reports = user['emergency_reports'];
+      return total + (reports is int ? reports : 0);
     });
   }
 
-  bool _isAdmin(QueryDocumentSnapshot user) {
-    final data = user.data() as Map<String, dynamic>;
-    return data['role'] == 'admin';
+  bool _isAdmin(Map<String, dynamic> user) {
+    return user['role'] == 'admin';
   }
 }
 

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:radar_dashboard/components/section_header.dart';
 
@@ -21,13 +20,12 @@ class ReportTableScreen extends StatefulWidget {
 class _ReportTableScreenState extends State<ReportTableScreen> {
   final ScrollController _verticalScrollController = ScrollController();
   final ScrollController _horizontalScrollController = ScrollController();
-  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final SupabaseClient _supabase = Supabase.instance.client;
   final TextEditingController _searchController = TextEditingController();
 
   String _searchQuery = '';
   String _selectedType = 'All';
   String _userRole = '';
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> _lastFilteredDocs = [];
 
   final List<String> _incidentTypes = const [
     'All',
@@ -57,14 +55,16 @@ class _ReportTableScreenState extends State<ReportTableScreen> {
   }
 
   Future<void> _getUserRole() async {
-    final user = _auth.currentUser;
+    final user = _supabase.auth.currentUser;
     if (user != null) {
-      final doc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .get();
+      final response = await _supabase
+          .from('app_users')
+          .select('role')
+          .eq('id', user.id)
+          .single();
+      
       setState(() {
-        _userRole = (doc.data()?['role'] as String?) ?? 'user';
+        _userRole = (response['role'] as String?) ?? 'user';
       });
     }
   }
@@ -75,12 +75,21 @@ class _ReportTableScreenState extends State<ReportTableScreen> {
   bool _isSameDay(DateTime a, DateTime b) =>
       a.year == b.year && a.month == b.month && a.day == b.day;
 
-  Query<Map<String, dynamic>> _buildQuery() {
-    Query<Map<String, dynamic>> q =
-        FirebaseFirestore.instance.collection('incidents');
+Future<List<Map<String, dynamic>>> _fetchIncidents() async {
+  try {
+    // Get all incidents first, then filter locally
+    final response = await _supabase
+        .from('incidents')
+        .select()
+        .order('timestamp', ascending: false);
 
+    debugPrint('Fetched ${response.length} incidents for report table');
+    if (response.isNotEmpty) {
+      debugPrint('First incident type: ${response.first['incident_type']}');
+    }
+
+    // Apply date filtering locally
     if (widget.dateRange != null) {
-      // Use the user-selected range
       final start = DateTime(
         widget.dateRange!.start.year,
         widget.dateRange!.start.month,
@@ -94,53 +103,58 @@ class _ReportTableScreenState extends State<ReportTableScreen> {
         23, 59, 59, 999,
       );
 
-      q = q
-          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
-          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(end));
+      return response.where((incident) {
+        final timestamp = DateTime.parse(incident['timestamp'] as String);
+        return timestamp.isAfter(start.subtract(const Duration(seconds: 1))) && 
+               timestamp.isBefore(end.add(const Duration(seconds: 1)));
+      }).toList();
     } else {
       // Default: incidents from today (midnight → now)
       final now = DateTime.now();
       final startOfToday = DateTime(now.year, now.month, now.day, 0, 0, 0);
 
-      q = q
-          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfToday))
-          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(now));
+      return response.where((incident) {
+        final timestamp = DateTime.parse(incident['timestamp'] as String);
+        return timestamp.isAfter(startOfToday.subtract(const Duration(seconds: 1))) && 
+               timestamp.isBefore(now.add(const Duration(seconds: 1)));
+      }).toList();
     }
-
-    // Always order by most recent first
-    return q.orderBy('timestamp', descending: true);
-  }
-
-Future<void> _pickDateRange() async {
-  final now = DateTime.now();
-  final initial = widget.dateRange ??
-      DateTimeRange(
-        start: now.subtract(const Duration(days: 1)),
-        end: now,
-      );
-
-  final picked = await showDateRangePicker(
-    context: context,
-    firstDate: DateTime(2020, 1, 1),
-    lastDate: now, // Don't allow future dates
-    initialDateRange: initial,
-    helpText: 'Select Incident Date Range',
-    saveText: 'Apply',
-  );
-
-  if (picked != null) {
-    // Allow single day selection by checking if start and end are the same day
-    if (picked.start.year == picked.end.year &&
-        picked.start.month == picked.end.month &&
-        picked.start.day == picked.end.day) {
-      // Single day selected - use the same day for both start and end
-      widget.onDateRangeChanged(picked);
-    } else {
-      // Multi-day range selected
-      widget.onDateRangeChanged(picked);
-    }
+  } catch (e) {
+    debugPrint('Error fetching incidents: $e');
+    return [];
   }
 }
+
+  Future<void> _pickDateRange() async {
+    final now = DateTime.now();
+    final initial = widget.dateRange ??
+        DateTimeRange(
+          start: now.subtract(const Duration(days: 1)),
+          end: now,
+        );
+
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020, 1, 1),
+      lastDate: now, // Don't allow future dates
+      initialDateRange: initial,
+      helpText: 'Select Incident Date Range',
+      saveText: 'Apply',
+    );
+
+    if (picked != null) {
+      // Allow single day selection by checking if start and end are the same day
+      if (picked.start.year == picked.end.year &&
+          picked.start.month == picked.end.month &&
+          picked.start.day == picked.end.day) {
+        // Single day selected - use the same day for both start and end
+        widget.onDateRangeChanged(picked);
+      } else {
+        // Multi-day range selected
+        widget.onDateRangeChanged(picked);
+      }
+    }
+  }
 
   void _clearDateRange() {
     widget.onDateRangeChanged(null);
@@ -148,17 +162,11 @@ Future<void> _pickDateRange() async {
 
   @override
   Widget build(BuildContext context) {
-    final now = DateTime.now();
-    final startOfDay = DateTime(now.year, now.month, now.day, 0, 0, 0);
-    final dailyStart = now.subtract(const Duration(hours: 24));
-    
-    final dateRange = widget.dateRange ?? DateTimeRange(start: dailyStart, end: now);
-    
-  final dateLabel = widget.dateRange == null 
-      ? 'Today' 
-      : _isSameDay(widget.dateRange!.start, widget.dateRange!.end)
-          ? DateFormat('MMM d, yyyy').format(widget.dateRange!.start) // Single day
-          : '${DateFormat('MMM d, yyyy').format(widget.dateRange!.start)} - ${DateFormat('MMM d, yyyy').format(widget.dateRange!.end)}'; // Date range
+    final dateLabel = widget.dateRange == null 
+        ? 'Today' 
+        : _isSameDay(widget.dateRange!.start, widget.dateRange!.end)
+            ? DateFormat('MMM d, yyyy').format(widget.dateRange!.start) // Single day
+            : '${DateFormat('MMM d, yyyy').format(widget.dateRange!.start)} - ${DateFormat('MMM d, yyyy').format(widget.dateRange!.end)}'; // Date range
 
     return Card(
       color: Theme.of(context).cardColor,
@@ -219,7 +227,7 @@ Future<void> _pickDateRange() async {
                       underline: const SizedBox(),
                       value: _selectedType,
                       icon: Icon(Icons.arrow_drop_down, color: Theme.of(context).iconTheme.color),
-                      dropdownColor: Theme.of(context).dialogBackgroundColor,
+                      dropdownColor: Theme.of(context).dialogTheme.backgroundColor ?? Theme.of(context).colorScheme.surface,
                       style: TextStyle(color: Theme.of(context).textTheme.bodyLarge?.color),
                       onChanged: (String? newValue) {
                         setState(() {
@@ -274,8 +282,8 @@ Future<void> _pickDateRange() async {
 
             const SizedBox(height: 20),
 
-            StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _buildQuery().snapshots(),
+            FutureBuilder<List<Map<String, dynamic>>>(
+              future: _fetchIncidents(),
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
                   return Center(
@@ -293,22 +301,21 @@ Future<void> _pickDateRange() async {
                   );
                 }
 
-                final allDocs = snapshot.data!.docs;
+                final allDocs = snapshot.data ?? [];
                 final today = DateTime.now();
                 final yesterday = today.subtract(const Duration(days: 1));
                 int resolvedToday = 0;
                 int resolvedYesterday = 0;
 
                 for (var doc in allDocs) {
-                  final data = doc.data();
-                  final status = (data['status'] ?? '').toString().toLowerCase();
+                  final status = (doc['status'] ?? '').toString().toLowerCase();
 
                   if (status == 'resolved') {
                     // Use resolvedAt if available, otherwise fallback to main timestamp
-                    final resolvedAt = data['resolvedAt'] as Timestamp?;
-                    final ts = resolvedAt ?? data['timestamp'] as Timestamp?;
+                    final resolvedAt = doc['resolvedAt'] as String?;
+                    final ts = resolvedAt ?? doc['timestamp'] as String?;
                     if (ts != null) {
-                      final d = ts.toDate();
+                      final d = DateTime.parse(ts);
                       if (_isSameDay(d, today)) resolvedToday++;
                       if (_isSameDay(d, yesterday)) resolvedYesterday++;
                     }
@@ -316,11 +323,11 @@ Future<void> _pickDateRange() async {
                 }
 
                 final filtered = allDocs.where((doc) {
-                  final data = doc.data();
-                  final location = (data['address'] ?? '').toString().toLowerCase();
-                  final type = (data['incidentType'] ?? '').toString().toLowerCase();
-                  final contactNumber = (data['contactNumber'] ?? '').toString().toLowerCase();
-                  final description = (data['description'] ?? '').toString().toLowerCase();
+                  final location = (doc['address'] ?? '').toString().toLowerCase();
+                  // Use 'incident_type' instead of 'incident_type'
+                  final type = (doc['incident_type'] ?? '').toString().toLowerCase();
+                  final contactNumber = (doc['contact_number'] ?? '').toString().toLowerCase();
+                  final description = (doc['description'] ?? '').toString().toLowerCase();
 
                   final matchesSearch = _searchQuery.isEmpty ||
                       location.contains(_searchQuery) ||
@@ -336,7 +343,8 @@ Future<void> _pickDateRange() async {
                   return matchesSearch && matchesType;
                 }).toList();
 
-                _lastFilteredDocs = filtered;
+                debugPrint('Filtered to ${filtered.length} incidents');
+                debugPrint('Selected type: $_selectedType');
 
                 if (filtered.isEmpty) {
                   return SizedBox(
@@ -381,9 +389,9 @@ Future<void> _pickDateRange() async {
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
+          color: color.withAlpha((255 * 0.1).round()),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color.withOpacity(0.3)),
+          border: Border.all(color: color.withAlpha((255 * 0.3).round())),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -411,7 +419,7 @@ Future<void> _pickDateRange() async {
     );
   }
 
-  Widget _buildIncidentTable(List<QueryDocumentSnapshot<Map<String, dynamic>>> filtered) {
+  Widget _buildIncidentTable(List<Map<String, dynamic>> filtered) {
     return SizedBox(
       height: 300,
       child: Scrollbar(
@@ -429,12 +437,13 @@ Future<void> _pickDateRange() async {
                 columnSpacing: 25,
                 horizontalMargin: 16,
                 headingRowHeight: 48,
-                dataRowHeight: 60,
-                headingRowColor: MaterialStateProperty.resolveWith<Color?>(
-                  (Set<MaterialState> states) => Theme.of(context).dataTableTheme.headingRowColor?.resolve(states) ?? Colors.grey[100],
+                dataRowMinHeight: 60,
+                dataRowMaxHeight: 60,
+                headingRowColor: WidgetStateProperty.resolveWith<Color?>(
+                  (Set<WidgetState> states) => Theme.of(context).dataTableTheme.headingRowColor?.resolve(states) ?? Colors.grey[100],
                 ),
-                dataRowColor: MaterialStateProperty.resolveWith<Color?>(
-                  (Set<MaterialState> states) => Theme.of(context).dataTableTheme.dataRowColor?.resolve(states) ?? Colors.white,
+                dataRowColor: WidgetStateProperty.resolveWith<Color?>(
+                  (Set<WidgetState> states) => Theme.of(context).dataTableTheme.dataRowColor?.resolve(states) ?? Colors.white,
                 ),
                 columns: [
                   DataColumn(
@@ -481,20 +490,21 @@ Future<void> _pickDateRange() async {
     );
   }
 
-  DataRow _buildDataRow(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final data = doc.data()!;
-    final timestamp = data['timestamp'] as Timestamp?;
+  DataRow _buildDataRow(Map<String, dynamic> doc) {
+    final timestamp = doc['timestamp'] as String?;
     final date = timestamp != null
-        ? DateFormat('MMM d, yyyy').format(timestamp.toDate())
+        ? DateFormat('MMM d, yyyy').format(DateTime.parse(timestamp))
         : 'N/A';
     final time = timestamp != null
-        ? DateFormat('h:mm a').format(timestamp.toDate())
+        ? DateFormat('h:mm a').format(DateTime.parse(timestamp))
         : 'N/A';
-    final location = (data['address'] ?? 'Unknown').toString();
-    final rawType = (data['incidentType'] ?? '').toString();
-    final status = (data['status'] ?? 'pending').toString().toLowerCase();
-    final requiresReview = data['requiresReview'] ?? false;
-    final suspicionScore = data['suspicionScore'] ?? 0.0;
+    final location = (doc['address'] ?? 'Unknown').toString();
+    // Use 'incident_type' instead of 'incident_type'
+    final rawType = (doc['incident_type'] ?? '').toString();
+    final status = (doc['status'] ?? 'pending').toString().toLowerCase();
+    final requiresReview = doc['requiresReview'] ?? false;
+    final suspicionScore = doc['suspicionScore'] ?? 0.0;
+    final docId = doc['id'] as String? ?? '';
 
     Color statusColor;
     switch (status) {
@@ -525,7 +535,7 @@ Future<void> _pickDateRange() async {
           Row(
             children: [
               Text(
-                doc.id.substring(0, 6),
+                docId.isNotEmpty ? docId.substring(0, 6) : 'N/A',
                 style: TextStyle(fontFamily: 'RobotoMono', fontSize: 12, color: Theme.of(context).textTheme.bodyLarge?.color),
               ),
               if (isSuspicious)
@@ -559,7 +569,7 @@ Future<void> _pickDateRange() async {
         DataCell(
           _userRole == 'admin'
               ? _StatusDropdown(
-                  docId: doc.id, 
+                  docId: docId, 
                   currentStatus: status,
                   requiresReview: requiresReview as bool,
                   suspicionScore: suspicionScore as double,
@@ -567,7 +577,7 @@ Future<void> _pickDateRange() async {
               : Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    color: statusColor.withOpacity(0.1),
+                    color: statusColor.withAlpha((255 * 0.1).round()),
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(color: statusColor),
                   ),
@@ -644,7 +654,7 @@ Future<void> _pickDateRange() async {
                     height: 6,
                     child: LinearProgressIndicator(
                       value: progressValue,
-                      backgroundColor: progressColor.withOpacity(0.2),
+                      backgroundColor: progressColor.withAlpha((255 * 0.2).round()),
                       valueColor: AlwaysStoppedAnimation<Color>(progressColor),
                     ),
                   ),
@@ -666,7 +676,7 @@ Future<void> _pickDateRange() async {
                     height: 6,
                     child: LinearProgressIndicator(
                       value: progressValue,
-                      backgroundColor: progressColor.withOpacity(0.2),
+                      backgroundColor: progressColor.withAlpha((255 * 0.2).round()),
                       valueColor: AlwaysStoppedAnimation<Color>(progressColor),
                     ),
                   ),
@@ -702,6 +712,7 @@ class _StatusDropdownState extends State<_StatusDropdown> {
   bool _isUpdating = false;
 
   final List<String> statusOptions = ['pending', 'in progress', 'resolved', 'under review'];
+  final SupabaseClient _supabase = Supabase.instance.client;
 
   @override
   void initState() {
@@ -727,6 +738,8 @@ class _StatusDropdownState extends State<_StatusDropdown> {
   }
 
   Future<void> _updateStatus(String newStatus) async {
+    if (!mounted) return;
+    
     setState(() => _isUpdating = true);
 
     try {
@@ -735,29 +748,48 @@ class _StatusDropdownState extends State<_StatusDropdown> {
       };
 
       if (newStatus == 'resolved') {
-        updateData['resolvedAt'] = FieldValue.serverTimestamp();
+        updateData['resolvedAt'] = DateTime.now().toIso8601String();
       }
 
       // Add to status updates timeline
       final statusUpdate = {
         'status': newStatus,
-        'timestamp': FieldValue.serverTimestamp(),
+        'timestamp': DateTime.now().toIso8601String(),
         'note': 'Status updated by admin',
-        'updatedBy': FirebaseAuth.instance.currentUser?.uid,
+        'updatedBy': _supabase.auth.currentUser?.id,
       };
 
-      await FirebaseFirestore.instance.collection('incidents').doc(widget.docId).update({
-        ...updateData,
-        'statusUpdates': FieldValue.arrayUnion([statusUpdate]),
-      });
+      // Get current status updates array
+      final currentDoc = await _supabase
+          .from('incidents')
+          .select('statusUpdates')
+          .eq('id', widget.docId)
+          .single();
 
-      setState(() => _selectedStatus = newStatus);
+      final currentUpdates = (currentDoc['statusUpdates'] as List?) ?? [];
+      final updatedStatusUpdates = [...currentUpdates, statusUpdate];
+
+      await _supabase
+          .from('incidents')
+          .update({
+            ...updateData,
+            'statusUpdates': updatedStatusUpdates,
+          })
+          .eq('id', widget.docId);
+
+      if (mounted) {
+        setState(() => _selectedStatus = newStatus);
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to update status: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to update status: $e')),
+        );
+      }
     } finally {
-      setState(() => _isUpdating = false);
+      if (mounted) {
+        setState(() => _isUpdating = false);
+      }
     }
   }
 
@@ -768,7 +800,7 @@ class _StatusDropdownState extends State<_StatusDropdown> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
-        color: statusColor.withOpacity(0.1),
+        color: statusColor.withAlpha((255 * 0.1).round()),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: statusColor),
       ),
@@ -778,7 +810,7 @@ class _StatusDropdownState extends State<_StatusDropdown> {
               child: DropdownButton<String>(
                 value: _selectedStatus,
                 icon: const Icon(Icons.arrow_drop_down, size: 18),
-                dropdownColor: Theme.of(context).dialogBackgroundColor,
+                dropdownColor: Theme.of(context).dialogTheme.backgroundColor ?? Theme.of(context).colorScheme.surface,
                 style: TextStyle(color: Theme.of(context).textTheme.bodyLarge?.color),
                 onChanged: (String? newValue) {
                   if (newValue != null && newValue != _selectedStatus) {

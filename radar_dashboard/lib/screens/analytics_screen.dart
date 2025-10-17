@@ -1,10 +1,9 @@
 import 'dart:async';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:radar_dashboard/components/section_header.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:syncfusion_flutter_charts/charts.dart';
 
 class AnalyticsScreen extends StatefulWidget {
@@ -67,7 +66,7 @@ class AnalyticsData {
 
 // Service Classes
 class AnalyticsService {
-  static AnalyticsData processIncidents(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+  static AnalyticsData processIncidents(List<Map<String, dynamic>> docs) {
     int totalIncidents = docs.length;
     int resolvedToday = 0;
     int activeAlerts = 0;
@@ -98,12 +97,12 @@ class AnalyticsService {
     final List<Map<String, dynamic>> recentCriticalIncidents = [];
 
     for (var doc in docs) {
-      final data = doc.data();
+      final data = doc;
       final status = (data['status'] ?? 'pending').toString().toLowerCase();
-      final typeRaw = (data['incidentType'] ?? '').toString().toLowerCase();
+      final typeRaw = (data['incident_type'] ?? '').toString().toLowerCase();
       final severity = (data['severity'] ?? 'unknown').toString().toLowerCase();
-      final reportedTs = data['timestamp'] as Timestamp?;
-      final resolvedTs = data['resolvedAt'] as Timestamp?;
+      final reportedTs = data['timestamp'] as String?;
+      final resolvedTs = data['resolvedAt'] as String?;
 
       // Simplified incident type classification
       _classifyIncidentType(typeRaw, typeCounts);
@@ -132,7 +131,7 @@ class AnalyticsService {
       // Track recent critical incidents
       _trackCriticalIncidents(
         data: data,
-        docId: doc.id,
+        docId: doc['id'] as String? ?? '',
         severity: severity,
         status: status,
         reportedTs: reportedTs,
@@ -194,19 +193,26 @@ class AnalyticsService {
   }
 
   static double? _calculateResponseTime({
-    required Timestamp? reportedTs,
-    required Timestamp? resolvedTs,
+    required String? reportedTs,
+    required String? resolvedTs,
     required String status,
     required DateTime currentTime,
   }) {
     if (reportedTs == null) return null;
 
-    if (status == 'resolved' && resolvedTs != null) {
-      final responseTimeMinutes = resolvedTs.toDate().difference(reportedTs.toDate()).inMinutes;
-      return responseTimeMinutes.toDouble();
-    } else if (status != 'resolved') {
-      final timeSinceReported = currentTime.difference(reportedTs.toDate()).inMinutes;
-      return timeSinceReported.toDouble();
+    try {
+      final reportedTime = DateTime.parse(reportedTs);
+
+      if (status == 'resolved' && resolvedTs != null) {
+        final resolvedTime = DateTime.parse(resolvedTs);
+        final responseTimeMinutes = resolvedTime.difference(reportedTime).inMinutes;
+        return responseTimeMinutes.toDouble();
+      } else if (status != 'resolved') {
+        final timeSinceReported = currentTime.difference(reportedTime).inMinutes;
+        return timeSinceReported.toDouble();
+      }
+    } catch (e) {
+      debugPrint('Error calculating response time: $e');
     }
     
     return null;
@@ -217,30 +223,34 @@ class AnalyticsService {
     required String docId,
     required String severity,
     required String status,
-    required Timestamp? reportedTs,
+    required String? reportedTs,
     required DateTime currentTime,
     required List<Map<String, dynamic>> recentCriticalIncidents,
   }) {
     if (severity.contains('critical') && reportedTs != null) {
-      final incidentTime = reportedTs.toDate();
-      final twentyFourHoursAgo = currentTime.subtract(const Duration(hours: 24));
+      try {
+        final incidentTime = DateTime.parse(reportedTs);
+        final twentyFourHoursAgo = currentTime.subtract(const Duration(hours: 24));
 
-      if (incidentTime.isAfter(twentyFourHoursAgo) && status != 'resolved') {
-        recentCriticalIncidents.add({
-          'id': docId,
-          'type': data['incidentType'] ?? 'Unknown',
-          'location': data['address'] ?? 'Unknown location',
-          'time': incidentTime,
-          'severity': severity,
-          'status': status,
-        });
+        if (incidentTime.isAfter(twentyFourHoursAgo) && status != 'resolved') {
+          recentCriticalIncidents.add({
+            'id': docId,
+            'type': data['incident_type'] ?? 'Unknown',
+            'location': data['address'] ?? 'Unknown location',
+            'time': incidentTime,
+            'severity': severity,
+            'status': status,
+          });
+        }
+      } catch (e) {
+        debugPrint('Error tracking critical incident: $e');
       }
     }
   }
 
   static void _updateStatusCounts({
     required String status,
-    required Timestamp? resolvedTs,
+    required String? resolvedTs,
     required DateTime today,
     required VoidCallback resolvedToday,
     required VoidCallback underReview,
@@ -248,12 +258,13 @@ class AnalyticsService {
   }) {
     if (status == 'resolved') {
       if (resolvedTs != null) {
-        final resolvedDate = DateTime(
-          resolvedTs.toDate().year,
-          resolvedTs.toDate().month,
-          resolvedTs.toDate().day,
-        );
-        if (resolvedDate == today) resolvedToday();
+        try {
+          final resolvedDate = DateTime.parse(resolvedTs);
+          final resolvedDay = DateTime(resolvedDate.year, resolvedDate.month, resolvedDate.day);
+          if (resolvedDay == today) resolvedToday();
+        } catch (e) {
+          debugPrint('Error parsing resolved date: $e');
+        }
       }
     } else if (status == 'under review') {
       underReview();
@@ -263,7 +274,7 @@ class AnalyticsService {
   }
 
   static List<EmergencyCase> getWeeklyData(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    List<Map<String, dynamic>> docs,
     int selectedWeekOffset,
   ) {
     final now = DateTime.now();
@@ -279,15 +290,19 @@ class AnalyticsService {
     }
 
     for (var doc in docs) {
-      final data = doc.data();
-      final ts = data['timestamp'] as Timestamp?;
+      final data = doc;
+      final ts = data['timestamp'] as String?;
       if (ts == null) continue;
 
-      final date = ts.toDate();
-      if (date.isAfter(startOfWeek.subtract(const Duration(seconds: 1))) &&
-          date.isBefore(endOfWeek.add(const Duration(days: 1)))) {
-        final weekday = _weekdayName(date.weekday);
-        weeklyData[weekday] = (weeklyData[weekday] ?? 0) + 1;
+      try {
+        final date = DateTime.parse(ts);
+        if (date.isAfter(startOfWeek.subtract(const Duration(seconds: 1))) &&
+            date.isBefore(endOfWeek.add(const Duration(days: 1)))) {
+          final weekday = _weekdayName(date.weekday);
+          weeklyData[weekday] = (weeklyData[weekday] ?? 0) + 1;
+        }
+      } catch (e) {
+        debugPrint('Error parsing date in weekly data: $e');
       }
     }
 
@@ -303,7 +318,7 @@ class AnalyticsService {
   }
 
   static List<MonthlyCase> getMonthlyData(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    List<Map<String, dynamic>> docs,
     int selectedMonthOffset,
   ) {
     final Map<String, int> monthlyData = {};
@@ -312,16 +327,20 @@ class AnalyticsService {
     final targetMonth = DateTime(currentMonth.year, currentMonth.month + selectedMonthOffset);
 
     for (var doc in docs) {
-      final data = doc.data();
-      final ts = data['timestamp'] as Timestamp?;
+      final data = doc;
+      final ts = data['timestamp'] as String?;
       if (ts == null) continue;
 
-      final date = ts.toDate();
-      final incidentMonth = DateTime(date.year, date.month);
+      try {
+        final date = DateTime.parse(ts);
+        final incidentMonth = DateTime(date.year, date.month);
 
-      if (incidentMonth.year == targetMonth.year && incidentMonth.month == targetMonth.month) {
-        final monthKey = DateFormat('MMM yyyy').format(date);
-        monthlyData[monthKey] = (monthlyData[monthKey] ?? 0) + 1;
+        if (incidentMonth.year == targetMonth.year && incidentMonth.month == targetMonth.month) {
+          final monthKey = DateFormat('MMM yyyy').format(date);
+          monthlyData[monthKey] = (monthlyData[monthKey] ?? 0) + 1;
+        }
+      } catch (e) {
+        debugPrint('Error parsing date in monthly data: $e');
       }
     }
 
@@ -350,24 +369,35 @@ class AnalyticsService {
 }
 
 class UserService {
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  static final SupabaseClient _supabase = Supabase.instance.client;
 
   static Future<String> getUserRole() async {
-    final user = _auth.currentUser;
+    final user = _supabase.auth.currentUser;
     if (user == null) return 'user';
     
     try {
-      final doc = await _firestore.collection('users').doc(user.uid).get();
-      return (doc.data()?['role'] as String?) ?? 'user';
+      final response = await _supabase
+          .from('app_users')
+          .select('role')
+          .eq('id', user.id)
+          .single();
+      return (response['role'] as String?) ?? 'user';
     } catch (e) {
       debugPrint('Error getting user role: $e');
       return 'user';
     }
   }
 
-  static Stream<QuerySnapshot> getUserCountStream() {
-    return _firestore.collection('users').snapshots();
+  static Future<int> getUserCount() async {
+    try {
+      final response = await _supabase
+          .from('app_users')
+          .select('id');
+      return response.length;
+    } catch (e) {
+      debugPrint('Error getting user count: $e');
+      return 0;
+    }
   }
 }
 
@@ -413,29 +443,56 @@ class DateRangeService {
 }
 
 class QueryBuilder {
-  static Query<Map<String, dynamic>> buildQuery(DateTimeRange? dateRange) {
-    Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection('incidents');
+  static Future<List<Map<String, dynamic>>> buildQuery(DateTimeRange? dateRange) async {
+    try {
+      var query = Supabase.instance.client
+          .from('incidents')
+          .select()
+          .order('timestamp', ascending: false);
 
-    if (dateRange != null) {
-      final start = DateTime(dateRange.start.year, dateRange.start.month, dateRange.start.day);
-      final end = DateTime(dateRange.end.year, dateRange.end.month, dateRange.end.day, 23, 59, 59);
+      if (dateRange != null) {
+        final start = DateTime(dateRange.start.year, dateRange.start.month, dateRange.start.day);
+        final end = DateTime(dateRange.end.year, dateRange.end.month, dateRange.end.day, 23, 59, 59);
 
-      // Ensure end date doesn't exceed current time
-      final actualEnd = end.isAfter(DateTime.now()) ? DateTime.now() : end;
+        // Ensure end date doesn't exceed current time
+        final actualEnd = end.isAfter(DateTime.now()) ? DateTime.now() : end;
 
-      q = q
-          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
-          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(actualEnd))
-          .orderBy('timestamp', descending: true);
-    } else {
-      // Limit to last 90 days if no date range selected to avoid huge data loads
-      final recentLimitDate = DateTime.now().subtract(const Duration(days: 90));
-      q = q
-          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(recentLimitDate))
-          .orderBy('timestamp', descending: true);
+        // Apply date filtering locally after fetching all data
+        final response = await query;
+        return response.where((incident) {
+          final timestampStr = incident['timestamp'] as String?;
+          if (timestampStr == null) return false;
+          
+          try {
+            final timestamp = DateTime.parse(timestampStr);
+            return timestamp.isAfter(start.subtract(const Duration(seconds: 1))) && 
+                   timestamp.isBefore(actualEnd.add(const Duration(seconds: 1)));
+          } catch (e) {
+            debugPrint('Error parsing timestamp: $e');
+            return false;
+          }
+        }).toList();
+      } else {
+        // Limit to last 90 days if no date range selected to avoid huge data loads
+        final recentLimitDate = DateTime.now().subtract(const Duration(days: 90));
+        final response = await query;
+        return response.where((incident) {
+          final timestampStr = incident['timestamp'] as String?;
+          if (timestampStr == null) return false;
+          
+          try {
+            final timestamp = DateTime.parse(timestampStr);
+            return timestamp.isAfter(recentLimitDate.subtract(const Duration(seconds: 1)));
+          } catch (e) {
+            debugPrint('Error parsing timestamp: $e');
+            return false;
+          }
+        }).toList();
+      }
+    } catch (e) {
+      debugPrint('Error building query: $e');
+      return [];
     }
-
-    return q;
   }
 }
 
@@ -444,16 +501,17 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   int _selectedWeekOffset = 0;
   int _selectedMonthOffset = 0;
   DateTimeRange? _dateRange;
-  final List<QueryDocumentSnapshot<Map<String, dynamic>>> _lastFilteredDocs = [];
   bool _isLoading = true;
   Timer? _debounce;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   bool _isOffline = false;
+  List<Map<String, dynamic>> _incidents = [];
 
   @override
   void initState() {
     super.initState();
     _initializeServices();
+    _loadData();
   }
 
   @override
@@ -477,6 +535,25 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     });
   }
 
+  Future<void> _loadData() async {
+    try {
+      final incidents = await QueryBuilder.buildQuery(_dateRange);
+      if (mounted) {
+        setState(() {
+          _incidents = incidents;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading data: $e');
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
   Future<void> _pickDateRange() async {
     final picked = await DateRangeService.pickDateRange(context, _dateRange);
     
@@ -487,14 +564,20 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         if (mounted) {
           setState(() {
             _dateRange = picked;
+            _isLoading = true;
           });
+          _loadData();
         }
       });
     }
   }
 
   void _clearDateRange() {
-    setState(() => _dateRange = null);
+    setState(() {
+      _dateRange = null;
+      _isLoading = true;
+    });
+    _loadData();
   }
 
   void _handleWeekOffsetChange(int? value) {
@@ -526,34 +609,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     return Scaffold(
       backgroundColor: Colors.grey[50],
       appBar: _buildAppBar(),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: QueryBuilder.buildQuery(_dateRange).snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return _buildErrorState(snapshot.error.toString());
-          }
-
-          if (snapshot.connectionState == ConnectionState.waiting && _isLoading) {
-            return _buildLoadingState();
-          }
-
-          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-            return _buildEmptyState();
-          }
-
-          final docs = snapshot.data!.docs;
-          _lastFilteredDocs.clear();
-          _lastFilteredDocs.addAll(docs);
-          _isLoading = false;
-
-          final analytics = AnalyticsService.processIncidents(docs);
-          final weeklyData = AnalyticsService.getWeeklyData(docs, _selectedWeekOffset);
-          final monthlyData = AnalyticsService.getMonthlyData(docs, _selectedMonthOffset);
-          final incidentTypeData = AnalyticsService.getIncidentTypeData(analytics.typeCounts);
-
-          return _buildContent(analytics, weeklyData, monthlyData, incidentTypeData);
-        },
-      ),
+      body: _buildContent(),
     );
   }
 
@@ -591,46 +647,20 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     );
   }
 
-  Widget _buildErrorState(String error) {
-    _isLoading = false;
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.error_outline, size: 48, color: Colors.red),
-          const SizedBox(height: 16),
-          Text(
-            'Error loading data\n$error',
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.red),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildContent() {
+    if (_isLoading) {
+      return _buildLoadingState();
+    }
 
-  Widget _buildLoadingState() {
-    return const Center(child: CircularProgressIndicator());
-  }
+    if (_incidents.isEmpty) {
+      return _buildEmptyState();
+    }
 
-  Widget _buildEmptyState() {
-    _isLoading = false;
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.analytics_outlined, size: 64, color: Colors.grey[300]),
-          const SizedBox(height: 16),
-          const Text(
-            'No incident data available',
-            style: TextStyle(fontSize: 16, color: Colors.grey),
-          ),
-        ],
-      ),
-    );
-  }
+    final analytics = AnalyticsService.processIncidents(_incidents);
+    final weeklyData = AnalyticsService.getWeeklyData(_incidents, _selectedWeekOffset);
+    final monthlyData = AnalyticsService.getMonthlyData(_incidents, _selectedMonthOffset);
+    final incidentTypeData = AnalyticsService.getIncidentTypeData(analytics.typeCounts);
 
-  Widget _buildContent(AnalyticsData analytics, List<EmergencyCase> weeklyData, List<MonthlyCase> monthlyData, List<IncidentTypeCase> incidentTypeData) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -641,6 +671,26 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           _buildStatisticsSection(analytics),
           const SizedBox(height: 32),
           _buildChartsSection(weeklyData, monthlyData, incidentTypeData),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoadingState() {
+    return const Center(child: CircularProgressIndicator());
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.analytics_outlined, size: 64, color: Colors.grey[300]),
+          const SizedBox(height: 16),
+          const Text(
+            'No incident data available',
+            style: TextStyle(fontSize: 16, color: Colors.grey),
+          ),
         ],
       ),
     );
@@ -825,7 +875,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: color.withOpacity(0.1),
+              color: color.withAlpha((255 * 0.1).round()),
               shape: BoxShape.circle,
             ),
             child: Icon(icon, color: color, size: 20),
@@ -1089,8 +1139,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   Widget _buildUserCountSection() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: UserService.getUserCountStream(),
+    return FutureBuilder<int>(
+      future: UserService.getUserCount(),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return _buildErrorCard('Error loading user data: ${snapshot.error}');
@@ -1100,7 +1150,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           return _buildLoadingCard();
         }
 
-        final userCount = snapshot.data?.docs.length ?? 0;
+        final userCount = snapshot.data ?? 0;
 
         return Card(
           elevation: 2,

@@ -1,9 +1,9 @@
 import 'dart:ui';
-
 import 'package:flutter/material.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' as latlng;
 import 'package:geocoding/geocoding.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 // Date selection mode enum (moved to top level)
 enum DateSelectionMode {
@@ -23,14 +23,14 @@ class MapMonitoringScreen extends StatefulWidget {
 }
 
 class _MapMonitoringScreenState extends State<MapMonitoringScreen> {
-  static const LatLng _initialPosition = LatLng(14.5995, 120.9842); // Manila
+  static const latlng.LatLng _initialPosition = latlng.LatLng(14.5995, 120.9842); // Manila
   static const double _initialZoom = 13.0;
 
-  final Set<Marker> _markers = {};
-  final Map<String, LatLng> _geocodingCache = {};
-  final Map<String, BitmapDescriptor> _iconCache = {};
-  GoogleMapController? _mapController;
-  Stream<QuerySnapshot>? _incidentsStream;
+  final List<Marker> _markers = [];
+  final Map<String, latlng.LatLng> _geocodingCache = {};
+  final Map<String, Widget> _iconCache = {};
+  MapController? _mapController;
+  List<Map<String, dynamic>> _incidents = [];
 
   bool _legendVisible = true;
   bool _statsVisible = true;
@@ -54,11 +54,13 @@ class _MapMonitoringScreenState extends State<MapMonitoringScreen> {
   // Statistics
   Map<String, int> _incidentStats = {};
 
+  final SupabaseClient _supabase = Supabase.instance.client;
+
   @override
   void initState() {
     super.initState();
     _preloadIcons().then((_) {
-      _setupRealTimeIncidents();
+      _loadIncidents();
     });
   }
 
@@ -129,7 +131,7 @@ class _MapMonitoringScreenState extends State<MapMonitoringScreen> {
       final types = ['fire', 'flood', 'accident', 'other accidents', 'unknown'];
       
       for (final type in types) {
-        _iconCache[type] = await _getCustomMarkerIcon(type);
+        _iconCache[type] = _buildCustomMarkerIcon(type);
       }
       
       if (mounted) {
@@ -145,221 +147,86 @@ class _MapMonitoringScreenState extends State<MapMonitoringScreen> {
   }
 
   void _loadDefaultIcons() {
-    final colors = {
-      'fire': Colors.red,
-      'flood': Colors.blue,
-      'accident': Colors.orange,
-      'other accidents': Colors.purple,
-      'unknown': Colors.grey,
-    };
+    final types = ['fire', 'flood', 'accident', 'other accidents', 'unknown'];
+    for (final type in types) {
+      _iconCache[type] = _buildCustomMarkerIcon(type);
+    }
+  }
+
+  Widget _buildCustomMarkerIcon(String type) {
+    final color = _getIncidentColor(type);
+    const size = 52.0;
     
-    colors.forEach((type, color) {
-      _iconCache[type] = BitmapDescriptor.defaultMarkerWithHue(
-        _colorToHue(color),
-      );
-    });
-  }
-
-  double _colorToHue(Color color) {
-    if (color == Colors.red) return BitmapDescriptor.hueRed;
-    if (color == Colors.blue) return BitmapDescriptor.hueBlue;
-    if (color == Colors.orange) return BitmapDescriptor.hueOrange;
-    if (color == Colors.purple) return BitmapDescriptor.hueViolet;
-    return BitmapDescriptor.hueAzure;
-  }
-
-  void _setupRealTimeIncidents() {
-    final selectedDates = _selectedDates;
-    
-    Query query = FirebaseFirestore.instance
-        .collection('incidents')
-        .where('status', isNotEqualTo: 'resolved');
-
-    // Apply date filtering only if not "select all"
-    if (_dateSelectionMode != DateSelectionMode.all && selectedDates.isNotEmpty) {
-      final startDate = DateTime(selectedDates.first.year, selectedDates.first.month, selectedDates.first.day);
-      final endDate = startDate.add(const Duration(days: 1));
-      
-      if (selectedDates.length == 1) {
-        query = query
-            .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate))
-            .where('timestamp', isLessThan: Timestamp.fromDate(endDate));
-      } else {
-        // For multiple dates, use array-contains-any if supported, otherwise filter client-side
-        query = query
-            .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate))
-            .where('timestamp', isLessThan: Timestamp.fromDate(endDate));
-      }
-    }
-
-    _incidentsStream = query.snapshots();
-
-    _incidentsStream?.listen((snapshot) {
-      if (mounted) {
-        _processIncidents(snapshot.docs);
-      }
-    }, onError: (error) {
-      debugPrint('Error listening to incidents: $error');
-    });
-  }
-
-  Future<void> _processIncidents(List<QueryDocumentSnapshot> docs) async {
-    final newMarkers = <Marker>{};
-    final stats = <String, int>{};
-
-    for (int i = 0; i < docs.length; i++) {
-      final doc = docs[i];
-      final data = doc.data() as Map<String, dynamic>;
-      
-      // Update statistics
-      final type = (data['incidentType'] ?? 'unknown').toString().toLowerCase();
-      stats[type] = (stats[type] ?? 0) + 1;
-      
-      if (i % 5 == 0) {
-        await Future.delayed(const Duration(milliseconds: 10));
-      }
-      
-      final position = await _getIncidentPosition(data);
-      if (position != null) {
-        final marker = await _createIncidentMarker(doc.id, data, position);
-        newMarkers.add(marker);
-      }
-    }
-
-    if (mounted) {
-      setState(() {
-        _markers
-          ..clear()
-          ..addAll(newMarkers);
-        _incidentStats = stats;
-      });
-    }
-  }
-
-  Future<LatLng?> _getIncidentPosition(Map<String, dynamic> data) async {
-    try {
-      final coordinates = _parseCoordinates(data);
-      if (coordinates != null) return coordinates;
-
-      if (data['address'] != null) {
-        return await _geocodeAddress(data['address'].toString());
-      }
-      
-      return null;
-    } catch (e) {
-      debugPrint('Error getting position: $e');
-      return null;
-    }
-  }
-
-  LatLng? _parseCoordinates(Map<String, dynamic> data) {
-    try {
-      final lat = data['latitude'] is double
-          ? data['latitude']
-          : double.tryParse(data['latitude']?.toString() ?? '');
-      final lng = data['longitude'] is double
-          ? data['longitude']
-          : double.tryParse(data['longitude']?.toString() ?? '');
-
-      return (lat != null && lng != null && _isValidLatLng(lat, lng)) 
-          ? LatLng(lat, lng) 
-          : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  bool _isValidLatLng(double lat, double lng) {
-    return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
-  }
-
-  Future<LatLng?> _geocodeAddress(String address) async {
-    if (_geocodingCache.containsKey(address)) {
-      return _geocodingCache[address];
-    }
-    
-    try {
-      final locations = await locationFromAddress(address);
-      if (locations.isNotEmpty) {
-        final pos = LatLng(locations.first.latitude, locations.first.longitude);
-        _geocodingCache[address] = pos;
-        return pos;
-      }
-    } catch (e) {
-      debugPrint('Geocoding error for address "$address": $e');
-    }
-    
-    return null;
-  }
-
-  // ========== MARKER METHODS ==========
-  Future<BitmapDescriptor> _getCustomMarkerIcon(String type) async {
-    try {
-      final color = _getIncidentColor(type);
-      const size = 52.0;
-      
-      final PictureRecorder recorder = PictureRecorder();
-      final Canvas canvas = Canvas(recorder);
-      
-      final Paint shadowPaint = Paint()
-        ..color = const Color(0xFF000000).withAlpha(102) // 40% opacity
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
-
-      canvas.drawCircle(const Offset(size/2 + 2, size/2 + 2), size/2 - 6, shadowPaint);
-      
-      final glowPaint = Paint()
-        ..color = color.withAlpha(77) // 30% opacity
-        ..maskFilter = const MaskFilter.blur(BlurStyle.outer, 4);
-      canvas.drawCircle(Offset(size/2, size/2), size/2 - 2, glowPaint);
-      
-      final gradient = RadialGradient(
-        colors: [color, Color.lerp(color, const Color(0xFF000000), 0.2)!],
-      );
-      final gradientPaint = Paint()
-        ..shader = gradient.createShader(Rect.fromCircle(center: Offset(size/2, size/2), radius: size/2 - 4));
-      canvas.drawCircle(Offset(size/2, size/2), size/2 - 4, gradientPaint);
-      
-      final borderPaint = Paint()
-        ..color = const Color(0xFFFFFFFF)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3.0;
-      canvas.drawCircle(Offset(size/2, size/2), size/2 - 4, borderPaint);
-
-      final iconCodePoint = _getIconCodePoint(type);
-      final textPainter = TextPainter(
-        textDirection: TextDirection.ltr,
-        text: TextSpan(
-          text: String.fromCharCode(iconCodePoint),
-          style: TextStyle(
-            fontSize: 22,
-            color: const Color(0xFFFFFFFF),
-            fontFamily: 'MaterialIcons',
-            fontWeight: FontWeight.w900,
-            shadows: [
-              Shadow(
-                color: const Color(0xFF000000).withAlpha(77), // 30% opacity
-                blurRadius: 2,
-                offset: const Offset(1, 1),
+    return Container(
+      width: size,
+      height: size,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // Shadow
+          Positioned(
+            top: 2,
+            left: 2,
+            child: Container(
+              width: size - 12,
+              height: size - 12,
+              decoration: BoxDecoration(
+                color: const Color(0xFF000000).withOpacity(0.4),
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF000000).withOpacity(0.4),
+                    blurRadius: 3,
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
-        ),
-      );
-      textPainter.layout();
-      textPainter.paint(
-        canvas,
-        Offset(size/2 - textPainter.width/2, size/2 - textPainter.height/2),
-      );
-
-      final picture = recorder.endRecording();
-      final image = await picture.toImage(size.toInt(), size.toInt());
-      final bytes = await image.toByteData(format: ImageByteFormat.png);
-      
-      return BitmapDescriptor.fromBytes(bytes!.buffer.asUint8List());
-    } catch (e) {
-      debugPrint('Error creating custom icon: $e');
-      return BitmapDescriptor.defaultMarkerWithHue(_colorToHue(_getIncidentColor(type)));
-    }
+          
+          // Glow effect
+          Container(
+            width: size - 4,
+            height: size - 4,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: color.withOpacity(0.3),
+                  blurRadius: 4,
+                  spreadRadius: 2,
+                ),
+              ],
+            ),
+          ),
+          
+          // Main circle with gradient
+          Container(
+            width: size - 8,
+            height: size - 8,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: RadialGradient(
+                colors: [color, Color.lerp(color, const Color(0xFF000000), 0.2)!],
+              ),
+              border: Border.all(
+                color: const Color(0xFFFFFFFF),
+                width: 3.0,
+              ),
+            ),
+          ),
+          
+          // Icon
+          Icon(
+            IconData(
+              _getIconCodePoint(type),
+              fontFamily: 'MaterialIcons',
+            ),
+            size: 22,
+            color: const Color(0xFFFFFFFF),
+          ),
+        ],
+      ),
+    );
   }
 
   int _getIconCodePoint(String type) {
@@ -377,36 +244,218 @@ class _MapMonitoringScreenState extends State<MapMonitoringScreen> {
     }
   }
 
-  Future<Marker> _createIncidentMarker(
-      String id, Map<String, dynamic> data, LatLng position) async {
-    final type = (data['incidentType'] ?? 'unknown').toString().toLowerCase();
-    final icon = _iconCache[type] ?? await _getCustomMarkerIcon(type);
+  Future<void> _loadIncidents() async {
+    try {
+      setState(() => _isLoading = true);
+      
+      var query = _supabase
+          .from('incidents')
+          .select()
+          .neq('status', 'resolved');
+
+      final response = await query;
+      
+      debugPrint('Fetched ${response.length} incidents from Supabase');
+      if (response.isNotEmpty) {
+        debugPrint('First incident: ${response.first}');
+      }
+      
+      if (mounted) {
+        await _processIncidents(response);
+      }
+    } catch (e) {
+      debugPrint('Error loading incidents: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to load incidents: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  Future<void> _processIncidents(List<dynamic> docs) async {
+    final newMarkers = <Marker>[];
+    final stats = <String, int>{};
+
+    // Apply date filtering locally
+    final filteredDocs = _filterIncidentsByDate(docs.cast<Map<String, dynamic>>());
+
+    for (int i = 0; i < filteredDocs.length; i++) {
+      final doc = filteredDocs[i];
+      
+      // Update statistics - use 'incident_type' to match your Supabase schema
+      final type = (doc['incident_type'] ?? 'unknown').toString().toLowerCase();
+      stats[type] = (stats[type] ?? 0) + 1;
+      
+      // Add small delay to prevent UI blocking
+      if (i % 5 == 0) {
+        await Future.delayed(const Duration(milliseconds: 10));
+      }
+      
+      final position = await _getIncidentPosition(doc);
+      if (position != null) {
+        final marker = _createIncidentMarker(doc['id'] as String? ?? '', doc, position);
+        newMarkers.add(marker);
+      } else {
+        debugPrint('Could not get position for incident: ${doc['id']}');
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _incidents = filteredDocs;
+        _markers
+          ..clear()
+          ..addAll(newMarkers);
+        _incidentStats = stats;
+      });
+    }
+  }
+
+  List<Map<String, dynamic>> _filterIncidentsByDate(List<Map<String, dynamic>> docs) {
+    final selectedDates = _selectedDates;
+    
+    if (_dateSelectionMode == DateSelectionMode.all || selectedDates.isEmpty) {
+      return docs;
+    }
+
+    return docs.where((doc) {
+      final timestampStr = doc['timestamp'] as String?;
+      if (timestampStr == null) return false;
+      
+      try {
+        final timestamp = DateTime.parse(timestampStr);
+        final incidentDate = DateTime(timestamp.year, timestamp.month, timestamp.day);
+        
+        return selectedDates.any((selectedDate) => 
+          incidentDate.year == selectedDate.year &&
+          incidentDate.month == selectedDate.month &&
+          incidentDate.day == selectedDate.day
+        );
+      } catch (e) {
+        debugPrint('Error parsing timestamp for filtering: $e');
+        return false;
+      }
+    }).toList();
+  }
+
+  Future<latlng.LatLng?> _getIncidentPosition(Map<String, dynamic> data) async {
+    try {
+      // First try to get coordinates directly
+      final coordinates = _parseCoordinates(data);
+      if (coordinates != null) return coordinates;
+
+      // If no coordinates, try geocoding the address
+      if (data['address'] != null) {
+        return await _geocodeAddress(data['address'].toString());
+      }
+      
+      return null;
+    } catch (e) {
+      debugPrint('Error getting position for incident: $e');
+      return null;
+    }
+  }
+
+  latlng.LatLng? _parseCoordinates(Map<String, dynamic> data) {
+    try {
+      // Try different possible field names for coordinates
+      final lat = data['latitude'] ?? data['lat'];
+      final lng = data['longitude'] ?? data['lng'] ?? data['lon'];
+      
+      double? parsedLat;
+      double? parsedLng;
+      
+      if (lat is double) {
+        parsedLat = lat;
+      } else if (lat is int) {
+        parsedLat = lat.toDouble();
+      } else if (lat is String) {
+        parsedLat = double.tryParse(lat);
+      }
+      
+      if (lng is double) {
+        parsedLng = lng;
+      } else if (lng is int) {
+        parsedLng = lng.toDouble();
+      } else if (lng is String) {
+        parsedLng = double.tryParse(lng);
+      }
+
+      return (parsedLat != null && parsedLng != null && _isValidLatLng(parsedLat, parsedLng)) 
+          ? latlng.LatLng(parsedLat, parsedLng) 
+          : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _isValidLatLng(double lat, double lng) {
+    return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  }
+
+  Future<latlng.LatLng?> _geocodeAddress(String address) async {
+    if (_geocodingCache.containsKey(address)) {
+      return _geocodingCache[address];
+    }
+    
+    try {
+      final locations = await locationFromAddress(address);
+      if (locations.isNotEmpty) {
+        final pos = latlng.LatLng(locations.first.latitude, locations.first.longitude);
+        _geocodingCache[address] = pos;
+        return pos;
+      }
+    } catch (e) {
+      debugPrint('Geocoding error for address "$address": $e');
+    }
+    
+    return null;
+  }
+
+  // ========== MARKER METHODS ==========
+  Marker _createIncidentMarker(String id, Map<String, dynamic> data, latlng.LatLng position) {
+    // Use 'incident_type' instead of 'incident_type' to match your Supabase schema
+    final type = (data['incident_type'] ?? 'unknown').toString().toLowerCase();
+    final icon = _iconCache[type] ?? _buildCustomMarkerIcon(type);
     final isSelected = _selectedIncident != null && _selectedIncident!['id'] == id;
 
     return Marker(
-      markerId: MarkerId(id),
-      position: position,
-      onTap: () => _onMarkerTapped(id, data, position),
-      icon: icon,
-      zIndex: isSelected ? 2 : 1,
-      anchor: const Offset(0.5, 0.5),
+      point: position,
+      width: 52.0,
+      height: 52.0,
+      child: GestureDetector(
+        onTap: () => _onMarkerTapped(id, data, position),
+        child: Transform.scale(
+          scale: isSelected ? 1.2 : 1.0,
+          child: icon,
+        ),
+      ),
     );
   }
 
-  void _onMarkerTapped(String id, Map<String, dynamic> data, LatLng position) {
+  void _onMarkerTapped(String id, Map<String, dynamic> data, latlng.LatLng position) {
     setState(() {
       _selectedIncident = {
         'id': id,
-        'type': (data['incidentType'] ?? 'unknown').toString().toLowerCase(),
+        // Use 'incident_type' to match your Supabase schema
+        'type': (data['incident_type'] ?? 'unknown').toString().toLowerCase(),
         'status': (data['status'] ?? 'pending').toString(),
         'address': (data['address'] ?? 'Unknown location').toString(),
-        'timestamp': (data['timestamp'] ?? Timestamp.now()).toString(),
+        'timestamp': (data['timestamp'] ?? DateTime.now().toIso8601String()).toString(),
         'description': data['description']?.toString() ?? 'No description provided',
       };
       _isZoomedToMarker = true;
     });
     
-    _mapController?.animateCamera(CameraUpdate.newLatLngZoom(position, 16));
+    _mapController?.move(position, 16);
   }
 
   Color _getIncidentColor(String type) {
@@ -782,13 +831,7 @@ class _MapMonitoringScreenState extends State<MapMonitoringScreen> {
 
   String _formatTimestamp(String timestamp) {
     try {
-      final Timestamp ts;
-      if (timestamp is String) {
-        ts = Timestamp.fromDate(DateTime.parse(timestamp));
-      } else {
-        ts = timestamp as Timestamp;
-      }
-      final date = ts.toDate();
+      final date = DateTime.parse(timestamp);
       return '${date.hour}:${date.minute.toString().padLeft(2, '0')}';
     } catch (_) {
       return 'Unknown time';
@@ -812,11 +855,7 @@ class _MapMonitoringScreenState extends State<MapMonitoringScreen> {
   }
 
   void _resetToDefaultView() {
-    _mapController?.animateCamera(
-      CameraUpdate.newCameraPosition(
-        const CameraPosition(target: _initialPosition, zoom: _initialZoom),
-      ),
-    );
+    _mapController?.move(_initialPosition, _initialZoom);
     setState(() => _isZoomedToMarker = false);
   }
 
@@ -824,7 +863,7 @@ class _MapMonitoringScreenState extends State<MapMonitoringScreen> {
     _geocodingCache.clear();
     _resetToDefaultView();
     setState(() => _selectedIncident = null);
-    _setupRealTimeIncidents();
+    _loadIncidents();
   }
 
   AppBar _buildAppBar() {
@@ -880,23 +919,30 @@ class _MapMonitoringScreenState extends State<MapMonitoringScreen> {
       appBar: _buildAppBar(),
       body: Stack(
         children: [
-          GoogleMap(
-            initialCameraPosition: const CameraPosition(
-              target: _initialPosition,
-              zoom: _initialZoom,
+          FlutterMap(
+            options: MapOptions(
+              initialCenter: _initialPosition,
+              initialZoom: _initialZoom,
+              maxZoom: 18,
+              minZoom: 3,
+              onTap: (_, __) {
+                // Close details panel when tapping on map
+                if (_selectedIncident != null) {
+                  setState(() => _selectedIncident = null);
+                }
+              },
             ),
-            markers: _markers,
-            mapType: MapType.normal,
-            myLocationEnabled: true,
-            myLocationButtonEnabled: false,
-            zoomControlsEnabled: false,
-            onMapCreated: (controller) => _mapController = controller,
-            padding: EdgeInsets.only(
-              top: MediaQuery.of(context).padding.top + 20,
-              bottom: _selectedIncident != null ? 200 : 20,
-              left: 20,
-              right: 20,
-            ),
+            children: [
+              // OpenStreetMap Tile Layer
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.app',
+              ),
+              
+              // Marker Layer
+              MarkerLayer(markers: _markers),
+            ],
+            mapController: _mapController,
           ),
 
           Positioned(
@@ -907,7 +953,7 @@ class _MapMonitoringScreenState extends State<MapMonitoringScreen> {
                 FloatingActionButton.small(
                   heroTag: 'location',
                   onPressed: () {
-                    _mapController?.animateCamera(CameraUpdate.newLatLngZoom(_initialPosition, _initialZoom));
+                    _mapController?.move(_initialPosition, _initialZoom);
                   },
                   backgroundColor: const Color(0xFFFFFFFF),
                   child: const Icon(Icons.my_location, color: Color(0xFF2C5282)),
@@ -916,7 +962,8 @@ class _MapMonitoringScreenState extends State<MapMonitoringScreen> {
                 FloatingActionButton.small(
                   heroTag: 'zoom_in',
                   onPressed: () {
-                    _mapController?.animateCamera(CameraUpdate.zoomIn());
+                    final currentZoom = _mapController?.camera.zoom ?? _initialZoom;
+                    _mapController?.move(_mapController!.camera.center, currentZoom + 1);
                   },
                   backgroundColor: const Color(0xFFFFFFFF),
                   child: const Icon(Icons.add, color: Color(0xFF2C5282)),
@@ -925,7 +972,8 @@ class _MapMonitoringScreenState extends State<MapMonitoringScreen> {
                 FloatingActionButton.small(
                   heroTag: 'zoom_out',
                   onPressed: () {
-                    _mapController?.animateCamera(CameraUpdate.zoomOut());
+                    final currentZoom = _mapController?.camera.zoom ?? _initialZoom;
+                    _mapController?.move(_mapController!.camera.center, currentZoom - 1);
                   },
                   backgroundColor: const Color(0xFFFFFFFF),
                   child: const Icon(Icons.remove, color: Color(0xFF2C5282)),

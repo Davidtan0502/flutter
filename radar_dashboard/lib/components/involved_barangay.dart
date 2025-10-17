@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:radar_dashboard/components/section_header.dart';
 
 class InvolvedBarangays extends StatelessWidget {
@@ -34,7 +34,8 @@ class _BarangayChartContent extends StatelessWidget {
       children: [
         const SectionHeader(
           icon: Icons.location_on_outlined,
-          title: 'INVOLVED LOCATION', subtitle: '',
+          title: 'INVOLVED LOCATION', 
+          subtitle: '',
         ),
         const SizedBox(height: 20),
         _BarangayDataLoader(dateRange: dateRange),
@@ -46,47 +47,65 @@ class _BarangayChartContent extends StatelessWidget {
 class _BarangayDataLoader extends StatelessWidget {
   final DateTimeRange? dateRange;
 
-  const _BarangayDataLoader({this.dateRange});
+  const _BarangayDataLoader({this.dateRange}); // Removed 'const' from constructor
 
-  Query<Map<String, dynamic>> _buildQuery() {
-    Query<Map<String, dynamic>> q =
-        FirebaseFirestore.instance.collection('incidents');
+  Future<List<Map<String, dynamic>>> _fetchData() async {
+    final supabase = Supabase.instance.client;
+    
+    try {
+      // First, get all incidents without date filtering
+      var query = supabase
+          .from('incidents')
+          .select('id, address, timestamp')
+          .order('timestamp', ascending: false);
 
-    if (dateRange != null) {
-      // Use the user-selected range
-      final start = DateTime(
-        dateRange!.start.year,
-        dateRange!.start.month,
-        dateRange!.start.day,
-        0, 0, 0,
-      );
-      final end = DateTime(
-        dateRange!.end.year,
-        dateRange!.end.month,
-        dateRange!.end.day,
-        23, 59, 59, 999,
-      );
+      final response = await query;
+      List<Map<String, dynamic>> allIncidents = List<Map<String, dynamic>>.from(response);
 
-      q = q
-          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
-          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(end));
-    } else {
-      // Default: incidents from today (midnight → now)
-      final now = DateTime.now();
-      final startOfToday = DateTime(now.year, now.month, now.day, 0, 0, 0);
+      // Apply date filtering locally
+      if (dateRange != null) {
+        final start = DateTime(
+          dateRange!.start.year,
+          dateRange!.start.month,
+          dateRange!.start.day,
+          0, 0, 0,
+        );
+        final end = DateTime(
+          dateRange!.end.year,
+          dateRange!.end.month,
+          dateRange!.end.day,
+          23, 59, 59, 999,
+        );
 
-      q = q
-          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfToday))
-          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(now));
+        allIncidents = allIncidents.where((incident) {
+          final timestamp = incident['timestamp'];
+          if (timestamp == null) return false;
+          final incidentDate = DateTime.parse(timestamp);
+          return incidentDate.isAfter(start) && incidentDate.isBefore(end);
+        }).toList();
+      } else {
+        // Default: incidents from today (midnight → now)
+        final now = DateTime.now();
+        final startOfToday = DateTime(now.year, now.month, now.day, 0, 0, 0);
+
+        allIncidents = allIncidents.where((incident) {
+          final timestamp = incident['timestamp'];
+          if (timestamp == null) return false;
+          final incidentDate = DateTime.parse(timestamp);
+          return incidentDate.isAfter(startOfToday) && incidentDate.isBefore(now);
+        }).toList();
+      }
+
+      return allIncidents;
+    } catch (e) {
+      throw Exception('Failed to load data: $e');
     }
-
-    return q.orderBy('timestamp', descending: true);
   }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot>(
-      stream: _buildQuery().snapshots(),
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: _fetchData(),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return const _ErrorDisplay(message: 'Error loading data');
@@ -96,7 +115,7 @@ class _BarangayDataLoader extends StatelessWidget {
           return const _LoadingIndicator();
         }
 
-        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+        if (!snapshot.hasData || snapshot.data!.isEmpty) {
           return _ErrorDisplay(
             message: dateRange == null 
               ? 'No incident data available' 
@@ -104,7 +123,7 @@ class _BarangayDataLoader extends StatelessWidget {
           );
         }
 
-        final dataProcessor = BarangayDataProcessor(snapshot.data!.docs);
+        final dataProcessor = BarangayDataProcessor(snapshot.data!);
         final chartData = dataProcessor.processData();
 
         return _BarangayChartDisplay(data: chartData);
@@ -114,7 +133,7 @@ class _BarangayDataLoader extends StatelessWidget {
 }
 
 class BarangayDataProcessor {
-  final List<QueryDocumentSnapshot> documents;
+  final List<Map<String, dynamic>> documents;
 
   BarangayDataProcessor(this.documents);
 
@@ -210,7 +229,7 @@ class _BarangayChartDisplay extends StatelessWidget {
           height: 200,
           child: PieChart(
             _buildChartData(),
-            swapAnimationDuration: const Duration(milliseconds: 500),
+            duration: const Duration(milliseconds: 500),
           ),
         ),
         const SizedBox(height: 16),
@@ -324,7 +343,13 @@ class _LoadingIndicator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(child: CircularProgressIndicator());
+    return const Center(
+      child: SizedBox(
+        height: 40,
+        width: 40,
+        child: CircularProgressIndicator(),
+      ),
+    );
   }
 }
 
@@ -336,9 +361,16 @@ class _ErrorDisplay extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Text(
-        message,
-        style: const TextStyle(color: Colors.grey),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Text(
+          message,
+          style: TextStyle(
+            color: Colors.grey[600],
+            fontSize: 14,
+          ),
+          textAlign: TextAlign.center,
+        ),
       ),
     );
   }

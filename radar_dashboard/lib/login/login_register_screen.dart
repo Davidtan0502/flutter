@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:radar_dashboard/supabase_config.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:radar_dashboard/login/terms_and_condition.dart';
 
-// Define snackbar types for different styling (moved outside class)
+// Define snackbar types for different styling
 enum SnackbarType { success, error, warning, info }
 
 class LoginRegisterScreen extends StatefulWidget {
@@ -16,8 +16,7 @@ class LoginRegisterScreen extends StatefulWidget {
 
 class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
   final _formKey = GlobalKey<FormState>();
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final SupabaseClient _supabase = Supabase.instance.client;
 
   bool isLogin = true;
   bool isLoading = false;
@@ -48,18 +47,6 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
 
   // Enhanced password validation with Google-like security
   final PasswordSecurityManager _passwordManager = PasswordSecurityManager();
-
-  // Add this method to update user's last login timestamp
-  Future<void> _updateUserLastLogin(String userId) async {
-    try {
-      await _firestore.collection('dashboard_users').doc(userId).update({
-        'lastLogin': Timestamp.now(),
-      });
-      debugPrint('User last login updated: $userId');
-    } catch (e) {
-      debugPrint('Error updating user last login: $e');
-    }
-  }
 
   // Mark field as touched when user interacts with it
   void _markFieldTouched(String fieldName) {
@@ -176,7 +163,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
       } else {
         await _handleRegistration();
       }
-    } on FirebaseAuthException catch (e) {
+    } on AuthException catch (e) {
       _handleAuthException(e);
     } catch (e) {
       _showSnackbar('An unexpected error occurred. Please try again later.', SnackbarType.error);
@@ -215,93 +202,166 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
     return RegistrationValidationResult(isValid: true);
   }
 
-  Future<void> _handleLogin() async {
-    final result = await _auth.signInWithEmailAndPassword(
-      email: email,
-      password: password,
-    );
+Future<void> _handleLogin() async {
+  final response = await _supabase.auth.signInWithPassword(
+    email: email,
+    password: password,
+  );
 
-    if (!result.user!.emailVerified) {
-      _showSnackbar(
-        "Please verify your email before logging in. Check your inbox for the verification link.",
-        SnackbarType.warning,
-      );
-      await _auth.signOut();
+  if (response.user == null) {
+    _showSnackbar('Login failed. Please check your credentials.', SnackbarType.error);
+    return;
+  }
+
+  try {
+    // Query dashboard_users table for user role - uses users_select_own_profile policy
+    final userData = await _supabase
+        .from('dashboard_users') 
+        .select('role, email, personal_details')
+        .eq('id', response.user!.id)
+        .single();
+
+    final userRole = userData['role'] as String?;
+    
+    // If user doesn't exist in dashboard_users
+    if (userRole == null) {
+      _showSnackbar('Access denied. User not found in dashboard system.', SnackbarType.error);
+      await _supabase.auth.signOut();
       return;
     }
 
-    final userDoc = await _firestore
-        .collection('dashboard_users')
-        .doc(result.user!.uid)
-        .get();
-
-    if (!userDoc.exists) {
-      _showSnackbar('Account not found. Please register first.', SnackbarType.error);
-      await _auth.signOut();
-      return;
-    }
-
-    final userRole = userDoc.data()?['role'];
+    // Validate role
     if (userRole != 'admin' && userRole != 'user') {
       _showSnackbar('Access denied. Invalid user permissions.', SnackbarType.error);
-      await _auth.signOut();
+      await _supabase.auth.signOut();
       return;
     }
 
-    // UPDATE USER'S LAST LOGIN TIMESTAMP FOR ONLINE/OFFLINE STATUS
-    await _updateUserLastLogin(result.user!.uid);
+    // Update user's last login timestamp - uses users_update_own_profile policy
+    await _updateUserLastLogin(response.user!.id);
 
-    _showSnackbar('Login successful! Redirecting to dashboard...', SnackbarType.success);
+    _showSnackbar('Login successful! Welcome back.', SnackbarType.success);
     await Future.delayed(const Duration(seconds: 1));
 
     if (!mounted) return;
-    Navigator.pushReplacementNamed(context, '/$userRole-dashboard');
+    Navigator.pushReplacementNamed(context, '/${userRole}_dashboard');
+
+  } on PostgrestException catch (e) {
+    debugPrint('Database error during login: ${e.message}');
+    
+    if (e.message.contains('PGRST116')) { // No rows returned
+      _showSnackbar('Access denied. User not found in dashboard system.', SnackbarType.error);
+      await _supabase.auth.signOut();
+    } else if (e.message.contains('row-level security policy')) {
+      _showSnackbar('Access denied. Insufficient permissions.', SnackbarType.error);
+      await _supabase.auth.signOut();
+    } else {
+      _showSnackbar('Login error. Please try again.', SnackbarType.error);
+    }
+  } catch (e) {
+    debugPrint('Unexpected error during login: $e');
+    _showSnackbar('An unexpected error occurred. Please try again.', SnackbarType.error);
+  }
+}
+
+Future<void> _handleRegistration() async {
+  final response = await _supabase.auth.signUp(
+    email: email,
+    password: password,
+    data: {'type': 'dashboard'}
+  );
+
+  if (response.user == null) {
+    _showSnackbar('Registration failed. Please try again.', SnackbarType.error);
+    return;
   }
 
-  Future<void> _handleRegistration() async {
-    final result = await _auth.createUserWithEmailAndPassword(
-      email: email,
-      password: password,
+  // Show verification email sent message immediately
+  _showSnackbar(
+    'Verification email sent! Please check your inbox to verify your email address.',
+    SnackbarType.success
+  );
+
+  const assignedRole = 'user'; // Always 'user' for new registrations
+  
+  try {
+    // IMPORTANT: Use the service role client to bypass RLS for initial profile creation
+    final adminClient = SupabaseClient(
+      SupabaseConfig.url,
+      SupabaseConfig.serviceRoleKey // Make sure this is set in your config
     );
 
-    const assignedRole = 'user';
-    await _firestore.collection('dashboard_users').doc(result.user!.uid).set({
-      'uid': result.user!.uid,
+    // Create user profile in dashboard_users table using service role
+    await adminClient.from('dashboard_users').insert({
+      'id': response.user!.id,
       'email': email,
       'role': assignedRole,
       'personal_details': {
         'firstName': firstName,
         'lastName': lastName,
         'phoneNumber': phoneNumber,
-        'dateOfBirth':
-            dateOfBirth != null ? Timestamp.fromDate(dateOfBirth!) : null,
-        'lastUpdated': Timestamp.now(),
+        'dateOfBirth': dateOfBirth?.toIso8601String(),
+        'lastUpdated': DateTime.now().toIso8601String(),
       },
       'security': {
         'passwordStrength': _passwordManager.calculatePasswordStrength(password),
         'passwordHash': _passwordManager.generatePasswordHash(password),
         'commonPasswordCheck': _passwordManager.isCommonPassword(password),
-        'accountCreated': Timestamp.now(),
-        'lastPasswordChange': Timestamp.now(),
+        'accountCreated': DateTime.now().toIso8601String(),
+        'lastPasswordChange': DateTime.now().toIso8601String(),
         'passwordHistory': [_passwordManager.generatePasswordHash(password)],
       },
-      'createdAt': Timestamp.now(),
-      'lastLogin': Timestamp.now(),
+      'created_at': DateTime.now().toIso8601String(),
+      'last_login': DateTime.now().toIso8601String(),
     });
 
-    await result.user!.sendEmailVerification();
+    debugPrint('User profile created successfully in dashboard_users with role: $assignedRole');
 
     _showSnackbar(
-      "Account created successfully! Please check your email for verification instructions.",
+      "Account created successfully! Please check your email to verify your account.",
       SnackbarType.success,
     );
 
-    // Clear form and switch to login
     _resetForm();
     setState(() {
       isLogin = true;
     });
+
+  } on PostgrestException catch (e) {
+    debugPrint('Database error during registration: ${e.message}');
+    
+    // Even if database insert fails, the auth user was created and email was sent
+    _showSnackbar(
+      'Account created! Please sign in after verifying your email.',
+      SnackbarType.success
+    );
+    _resetForm();
+    setState(() => isLogin = true);
+  } catch (e) {
+    debugPrint('Unexpected error during profile creation: $e');
+    _showSnackbar(
+      'Account created! Please check your email for verification.',
+      SnackbarType.success
+    );
+    _resetForm();
+    setState(() => isLogin = true);
   }
+}
+  // Add this method to update user's last login timestamp
+Future<void> _updateUserLastLogin(String userId) async {
+  try {
+    await _supabase
+        .from('dashboard_users')
+        .update({
+          'last_login': DateTime.now().toIso8601String(),
+        })
+        .eq('id', userId);
+    debugPrint('User last login updated: $userId');
+  } catch (e) {
+    debugPrint('Error updating user last login: $e');
+    // Non-critical error, don't disrupt login flow
+  }
+}
 
   void _resetForm() {
     _formKey.currentState?.reset();
@@ -317,41 +377,26 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
     });
   }
 
-  void _handleAuthException(FirebaseAuthException e) {
+  void _handleAuthException(AuthException e) {
     String errorMessage;
-    switch (e.code) {
-      case 'user-not-found':
-        errorMessage = "No account found with this email address. Please check your email or register for a new account.";
+    switch (e.message) {
+      case 'Invalid login credentials':
+        errorMessage = "Invalid email or password. Please check your credentials.";
         break;
-      case 'wrong-password':
-        errorMessage = "Incorrect password. Please try again or use the 'Forgot Password' option if you can't remember.";
+      case 'Email not confirmed':
+        errorMessage = "Please confirm your email address before logging in.";
         break;
-      case 'invalid-email':
-        errorMessage = "Invalid email address format. Please check and try again.";
+      case 'User already registered':
+        errorMessage = "This email is already registered. Please sign in instead.";
         break;
-      case 'user-disabled':
-        errorMessage = "This account has been disabled. Please contact support for assistance.";
+      case 'Weak password':
+        errorMessage = "Password is too weak. Please choose a stronger password.";
         break;
-      case 'email-already-in-use':
-        errorMessage = "This email is already registered. Please sign in instead or use a different email address.";
-        break;
-      case 'operation-not-allowed':
-        errorMessage = "Email/password accounts are not enabled. Please contact support.";
-        break;
-      case 'weak-password':
-        errorMessage = "Password is too weak. Please choose a stronger password with at least 8 characters including uppercase, lowercase, numbers, and special characters.";
-        break;
-      case 'network-request-failed':
-        errorMessage = "Network connection failed. Please check your internet connection and try again.";
-        break;
-      case 'too-many-requests':
-        errorMessage = "Too many unsuccessful login attempts. Please try again later or reset your password.";
-        break;
-      case 'invalid-credential':
-        errorMessage = "The authentication credential is invalid. Please check your email and password.";
+      case 'Password should be at least 6 characters':
+        errorMessage = "Password must be at least 6 characters long.";
         break;
       default:
-        errorMessage = "Authentication failed. Please check your credentials and try again.";
+        errorMessage = e.message;
     }
     _showSnackbar(errorMessage, SnackbarType.error);
   }
@@ -651,7 +696,6 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
     }
   }
 
-  // Rest of the methods remain the same (resetPassword, showResetPasswordDialog, sendPasswordResetEmail)
   Future<void> _resetPassword() async {
     if (email.isEmpty || !email.contains('@')) {
       _showResetPasswordDialog();
@@ -730,28 +774,22 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
     setState(() => isResettingPassword = true);
     
     try {
-      await _auth.sendPasswordResetEmail(email: emailAddress);
+      await _supabase.auth.resetPasswordForEmail(emailAddress);
       
       _showSnackbar(
         "Password reset email sent! Check your inbox for instructions. If you don't see it, check your spam folder.",
         SnackbarType.success
       );
       
-      if (this.email.isEmpty) {
-        setState(() => this.email = emailAddress);
+      if (email.isEmpty) {
+        setState(() => email = emailAddress);
       }
       
-    } on FirebaseAuthException catch (e) {
+    } on AuthException catch (e) {
       String errorMessage;
-      switch (e.code) {
-        case 'user-not-found':
+      switch (e.message) {
+        case 'User not found':
           errorMessage = "No account found with this email address. Please check your email or register for a new account.";
-          break;
-        case 'invalid-email':
-          errorMessage = "Invalid email address format. Please check and try again.";
-          break;
-        case 'too-many-requests':
-          errorMessage = "Too many password reset attempts. Please try again later.";
           break;
         default:
           errorMessage = "Failed to send password reset email. Please try again.";

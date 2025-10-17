@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:intl/intl.dart';
-import 'package:radar_dashboard/login/admin/admin_incident_report_screen.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:radar_dashboard/login/admin/mobile_user_card.dart';
+import 'dart:async';
 
 class SearchableUsersList extends StatefulWidget {
   const SearchableUsersList({super.key});
@@ -14,22 +13,46 @@ class SearchableUsersList extends StatefulWidget {
 class _SearchableUsersListState extends State<SearchableUsersList> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
+  final SupabaseClient _supabase = Supabase.instance.client;
+  List<Map<String, dynamic>> _users = [];
+  bool _loading = false;
+  Timer? _searchDebounce;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUsers();
+  }
 
   @override
   void dispose() {
     _searchController.dispose();
+    _searchDebounce?.cancel();
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        _buildSearchBar(),
-        const SizedBox(height: 16),
-        Expanded(child: _buildUsersList()),
-      ],
-    );
+  Future<void> _loadUsers() async {
+    setState(() => _loading = true);
+    try {
+      final response = await _supabase
+          .from('app_users')
+          .select()
+          .order('created_at', ascending: false);
+      
+      setState(() => _users = List<Map<String, dynamic>>.from(response));
+    } catch (e) {
+      debugPrint('Error loading users: $e');
+    } finally {
+      setState(() => _loading = false);
+    }
+  }
+
+  void _onSearchChanged(String value) {
+    if (_searchDebounce?.isActive ?? false) _searchDebounce?.cancel();
+    
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      setState(() => _searchQuery = value.toLowerCase().trim());
+    });
   }
 
   Widget _buildSearchBar() {
@@ -61,9 +84,7 @@ class _SearchableUsersListState extends State<SearchableUsersList> {
           border: InputBorder.none,
           contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         ),
-        onChanged: (value) {
-          setState(() => _searchQuery = value.toLowerCase().trim());
-        },
+        onChanged: _onSearchChanged,
       ),
     );
   }
@@ -74,53 +95,39 @@ class _SearchableUsersListState extends State<SearchableUsersList> {
   }
 
   Widget _buildUsersList() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance.collection('users').snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return _buildErrorState('Error: ${snapshot.error}');
-        }
+    if (_loading) {
+      return _buildLoadingState();
+    }
 
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return _buildLoadingState();
-        }
+    final filteredUsers = _filterUsers(_users);
 
-        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          return _buildEmptyState('No users found');
-        }
+    if (filteredUsers.isEmpty) {
+      return _buildEmptyState(
+        _searchQuery.isEmpty ? 'No users found' : 'No users found for "$_searchQuery"'
+      );
+    }
 
-        final filteredUsers = _filterUsers(snapshot.data!.docs);
-
-        if (filteredUsers.isEmpty) {
-          return _buildEmptyState('No users found for "$_searchQuery"');
-        }
-
-        return ListView.builder(
-          padding: const EdgeInsets.only(bottom: 16),
-          itemCount: filteredUsers.length,
-          itemBuilder: (context, index) {
-            final user = filteredUsers[index];
-            final userData = user.data() as Map<String, dynamic>;
-            
-            return Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: RadarAppUserCard(
-                user: user,
-                data: userData,
-                searchQuery: _searchQuery,
-              ),
-            );
-          },
+    return ListView.builder(
+      padding: const EdgeInsets.only(bottom: 16),
+      itemCount: filteredUsers.length,
+      itemBuilder: (context, index) {
+        final userData = filteredUsers[index];
+        
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: RadarAppUserCard(
+            userData: userData,
+            searchQuery: _searchQuery,
+          ),
         );
       },
     );
   }
 
-  List<QueryDocumentSnapshot> _filterUsers(List<QueryDocumentSnapshot> users) {
+  List<Map<String, dynamic>> _filterUsers(List<Map<String, dynamic>> users) {
     if (_searchQuery.isEmpty) return users;
     
-    return users.where((userDoc) {
-      final userData = userDoc.data() as Map<String, dynamic>;
+    return users.where((userData) {
       final email = userData['email']?.toString().toLowerCase() ?? '';
       final name = userData['name']?.toString().toLowerCase() ?? '';
       final role = userData['role']?.toString().toLowerCase() ?? '';
@@ -158,6 +165,11 @@ class _SearchableUsersListState extends State<SearchableUsersList> {
             style: const TextStyle(color: Colors.red),
             textAlign: TextAlign.center,
           ),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: _loadUsers,
+            child: const Text('Try Again'),
+          ),
         ],
       ),
     );
@@ -175,8 +187,26 @@ class _SearchableUsersListState extends State<SearchableUsersList> {
             style: TextStyle(color: Colors.grey[600]),
             textAlign: TextAlign.center,
           ),
+          if (_searchQuery.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _clearSearch,
+              child: const Text('Clear Search'),
+            ),
+          ],
         ],
       ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _buildSearchBar(),
+        const SizedBox(height: 16),
+        Expanded(child: _buildUsersList()),
+      ],
     );
   }
 }

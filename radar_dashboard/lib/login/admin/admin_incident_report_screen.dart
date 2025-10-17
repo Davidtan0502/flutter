@@ -1,13 +1,9 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
-import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
-import 'package:photo_view/photo_view.dart';
-import 'package:radar_dashboard/login/admin/admin_panel_screen.dart';
 import 'package:shimmer/shimmer.dart';
+import 'package:photo_view/photo_view.dart';
+import 'package:flutter/foundation.dart';
 
 // ========== CONSTANTS & CONFIGURATION ==========
 class IncidentConstants {
@@ -43,7 +39,7 @@ class Incident {
   final String? contactNumber;
   final String? description;
   final String status;
-  final Timestamp? timestamp;
+  final DateTime? timestamp;
   final List<dynamic> imageUrls;
   final List<dynamic> statusUpdates;
   final String? userId;
@@ -62,44 +58,58 @@ class Incident {
     this.userId,
   });
 
-  factory Incident.fromDocument(QueryDocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+  factory Incident.fromMap(Map<String, dynamic> data) {
+    DateTime? parseTimestamp(dynamic timestamp) {
+      if (timestamp == null) return null;
+      if (timestamp is DateTime) return timestamp;
+      if (timestamp is String) return DateTime.tryParse(timestamp);
+      return null;
+    }
+
     return Incident(
-      id: doc.id,
-      incidentType: data['incidentType']?.toString(),
+      id: data['id']?.toString() ?? '',
+      incidentType: data['incident_type']?.toString(),
       address: data['address']?.toString(),
       name: data['name']?.toString(),
-      contactNumber: data['contactNumber']?.toString(),
+      contactNumber: data['contact_number']?.toString(),
       description: data['description']?.toString(),
       status: (data['status'] ?? 'pending').toString(),
-      timestamp: data['timestamp'] as Timestamp?,
-      imageUrls: data['imageUrls'] as List<dynamic>? ?? [],
-      statusUpdates: data['statusUpdates'] as List<dynamic>? ?? [],
-      userId: data['userId']?.toString(),
+      timestamp: parseTimestamp(data['timestamp']),
+      imageUrls: data['image_urls'] as List<dynamic>? ?? [],
+      statusUpdates: data['status_updates'] as List<dynamic>? ?? [],
+      userId: data['user_id']?.toString(),
     );
+  }
+
+  String get formattedTime {
+    if (timestamp == null) return 'Unknown time';
+    return DateFormat('MMM d, h:mm a').format(timestamp!);
+  }
+
+  String get formattedDate {
+    if (timestamp == null) return 'Unknown date';
+    return DateFormat('MMMM d, y - h:mm a').format(timestamp!);
   }
 }
 
 // ========== SERVICES ==========
 class IncidentService {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  static final SupabaseClient _supabase = Supabase.instance.client;
 
-static Stream<QuerySnapshot> getIncidentsStream({String? userId}) {
-  if (userId != null && userId.isNotEmpty) {
-    // This query requires a composite index: userId (Ascending) + timestamp (Descending)
-    return _firestore
-        .collection('incidents')
-        .where('userId', isEqualTo: userId)
-        .orderBy('timestamp', descending: true)
-        .snapshots();
-  } else {
-    // Simple query when no userId filter
-    return _firestore
-        .collection('incidents')
-        .orderBy('timestamp', descending: true)
-        .snapshots();
+  static Stream<List<Map<String, dynamic>>> getIncidentsStream({String? userId}) {
+    var query = _supabase
+        .from('incidents')
+        .stream(primaryKey: ['id'])
+        .order('timestamp', ascending: false);
+
+    // Filter by user ID in the application layer instead of stream level
+    return query.map((data) {
+      if (userId != null && userId.isNotEmpty) {
+        return data.where((incident) => incident['user_id'] == userId).toList();
+      }
+      return data;
+    });
   }
-}
 
   static Future<void> updateIncidentStatus({
     required String id,
@@ -107,52 +117,84 @@ static Stream<QuerySnapshot> getIncidentsStream({String? userId}) {
     required String note,
     required String updatedBy,
   }) async {
-    final doc = await _firestore.collection('incidents').doc(id).get();
-    if (!doc.exists) throw Exception("Document does not exist");
+    final response = await _supabase
+        .from('incidents')
+        .select()
+        .eq('id', id)
+        .single();
 
-    final currentData = doc.data() as Map<String, dynamic>;
+    if (response.containsKey('error') && response['error'] != null) {
+      throw Exception("Incident does not exist: ${response['error']['message']}");
+    }
+
+    final currentData = response;
     final currentUpdates = List<Map<String, dynamic>>.from(
-      currentData['statusUpdates'] ?? [],
+      currentData['status_updates'] ?? [],
     );
 
     final newStatusUpdate = {
       'status': status,
-      'timestamp': Timestamp.now(),
+      'timestamp': DateTime.now().toUtc().toIso8601String(),
       'note': note,
-      'updatedBy': updatedBy,
+      'updated_by': updatedBy,
     };
 
     currentUpdates.add(newStatusUpdate);
 
-    await _firestore.collection('incidents').doc(id).update({
-      'status': status,
-      'statusUpdates': currentUpdates,
-      'lastUpdated': FieldValue.serverTimestamp(),
-    });
+    final updateResponse = await _supabase
+        .from('incidents')
+        .update({
+          'status': status,
+          'status_updates': currentUpdates,
+          'last_updated': DateTime.now().toUtc().toIso8601String(),
+        })
+        .eq('id', id);
+
+    if (updateResponse.hasError) {
+      throw Exception(updateResponse.error!.message);
+    }
   }
 
   static Future<void> batchUpdateStatus(List<String> ids, String status) async {
-    final batch = _firestore.batch();
-    final updateTime = FieldValue.serverTimestamp();
-
+    final updateTime = DateTime.now().toUtc().toIso8601String();
+    
     for (final id in ids) {
-      final docRef = _firestore.collection('incidents').doc(id);
-      batch.update(docRef, {
-        'status': status,
-        'lastUpdated': updateTime,
-      });
-    }
+      final response = await _supabase
+          .from('incidents')
+          .update({
+            'status': status,
+            'last_updated': updateTime,
+          })
+          .eq('id', id);
 
-    await batch.commit();
+      if (response.hasError) {
+        throw Exception("Failed to update incident $id: ${response.error!.message}");
+      }
+    }
   }
 
   static Future<void> batchDeleteIncidents(List<String> ids) async {
-    final batch = _firestore.batch();
     for (final id in ids) {
-      final docRef = _firestore.collection('incidents').doc(id);
-      batch.delete(docRef);
+      final response = await _supabase
+          .from('incidents')
+          .delete()
+          .eq('id', id);
+
+      if (response.hasError) {
+        throw Exception("Failed to delete incident $id: ${response.error!.message}");
+      }
     }
-    await batch.commit();
+  }
+
+  static Future<Map<String, dynamic>?> getIncident(String id) async {
+    final response = await _supabase
+        .from('incidents')
+        .select()
+        .eq('id', id)
+        .single();
+
+    if (response.containsKey('error') && response['error'] != null) return null;
+    return response;
   }
 }
 
@@ -255,43 +297,44 @@ class StyleService {
 }
 
 class UserService {
+  static final SupabaseClient _supabase = Supabase.instance.client;
+
   static Future<String> getFullName(String? userId) async {
     try {
       if (userId == null) return "Unknown Name";
 
-      final userDoc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(userId)
-          .get();
+      final response = await _supabase
+          .from('app_users')
+          .select()
+          .eq('id', userId)
+          .single();
 
-      if (!userDoc.exists) return "Unknown Name";
+      if ((response is Map<String, dynamic> && response.containsKey('error') && response['error'] != null) || response == null) {
+        return "Unknown Name";
+      }
 
-      final userData = userDoc.data() as Map<String, dynamic>;
+      final userData = response;
       
-      // Check for different possible field names
-      final firstName = userData['firstName']?.toString().trim() ?? 
+      final firstName = userData['first_name']?.toString().trim() ?? 
                        userData['firstname']?.toString().trim() ?? 
                        userData['name']?.toString().trim() ?? 
-                       userData['fullName']?.toString().trim() ?? '';
+                       userData['full_name']?.toString().trim() ?? '';
       
-      final middleName = userData['middleName']?.toString().trim() ?? 
+      final middleName = userData['middle_name']?.toString().trim() ?? 
                         userData['middlename']?.toString().trim() ?? '';
       
-      final lastName = userData['lastName']?.toString().trim() ?? 
+      final lastName = userData['last_name']?.toString().trim() ?? 
                       userData['lastname']?.toString().trim() ?? '';
 
-      // If we have a fullName field directly, use that
-      final fullName = userData['fullName']?.toString().trim();
+      final fullName = userData['full_name']?.toString().trim();
       if (fullName != null && fullName.isNotEmpty) {
         return _formatNameProperly(fullName);
       }
 
-      // Build name from parts
       if (firstName.isEmpty && lastName.isEmpty) {
-        // Try email as fallback
         final email = userData['email']?.toString().trim();
         if (email != null && email.isNotEmpty) {
-          return _formatNameProperly(email.split('@').first); // Return username part of email
+          return _formatNameProperly(email.split('@').first);
         }
         return "Unknown Name";
       }
@@ -310,29 +353,18 @@ class UserService {
     }
   }
 
-  /// Formats names with proper capitalization for hyphens, spaces, and multiple words
-  /// Examples: 
-  /// - "marie-claire" becomes "Marie-Claire"
-  /// - "jean-paul" becomes "Jean-Paul"
-  /// - "san juan" becomes "San Juan"
-  /// - "delos santos" becomes "Delos Santos"
-  /// - "van der merwe" becomes "Van der Merwe"
-  /// - "mary jane" becomes "Mary Jane"
   static String _formatNameProperly(String name) {
     if (name.isEmpty) return name;
     
-    // Handle hyphenated names first
     if (name.contains('-')) {
       final parts = name.split('-');
       final formattedParts = parts.map((part) => _capitalizeEachWord(part)).toList();
       return formattedParts.join('-');
     }
     
-    // Handle names with spaces (middle names, compound last names, etc.)
     return _capitalizeEachWord(name);
   }
 
-  /// Capitalizes each word in a string, handling special cases
   static String _capitalizeEachWord(String text) {
     if (text.isEmpty) return text;
     
@@ -340,19 +372,16 @@ class UserService {
     final formattedWords = words.map((word) {
       if (word.isEmpty) return word;
       
-      // Handle common name prefixes that should be lowercase in some contexts
       final lowerCaseWords = {
         'de', 'del', 'der', 'van', 'von', 'y', 'e', 'la', 'las', 
         'el', 'los', 'san', 'santa', 'santo', 'st', 'st.'
       };
       
-      // Check if this word should remain lowercase (except when it's the first word)
       if (lowerCaseWords.contains(word.toLowerCase()) && 
           words.indexOf(word) > 0) {
         return word.toLowerCase();
       }
       
-      // Capitalize the word normally
       return word[0].toUpperCase() + word.substring(1).toLowerCase();
     }).toList();
     
@@ -361,8 +390,6 @@ class UserService {
 }
 
 // ========== WIDGETS ==========
-
-// Incident Card Widget
 class IncidentCard extends StatelessWidget {
   final Incident incident;
   final VoidCallback onTap;
@@ -570,9 +597,7 @@ class IncidentCard extends StatelessWidget {
           const SizedBox(width: 4),
         ],
         Text(
-          incident.timestamp != null
-              ? DateFormat('MMM d, h:mm a').format(incident.timestamp!.toDate())
-              : 'Unknown time',
+          incident.formattedTime,
           style: TextStyle(
             fontSize: 12,
             color: Colors.blueGrey.shade600,
@@ -633,7 +658,6 @@ class IncidentCard extends StatelessWidget {
   }
 }
 
-// Incident Details Modal
 class IncidentDetailsModal extends StatefulWidget {
   final Incident incident;
   final String userRole;
@@ -656,44 +680,14 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
   late String _selectedStatus;
   final TextEditingController _noteController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
-  final Map<String, Uint8List?> _imageCache = {};
 
   @override
   void initState() {
     super.initState();
     _selectedStatus = widget.incident.status;
-    _preloadImages();
-  }
-
-  Future<void> _preloadImages() async {
-    for (final imageUrl in widget.incident.imageUrls) {
-      if (imageUrl is String && imageUrl.isNotEmpty) {
-        _loadImageForWeb(imageUrl);
-      }
-    }
-  }
-
-  Future<void> _loadImageForWeb(String imageUrl) async {
-    try {
-      if (_imageCache.containsKey(imageUrl)) return;
-
-      final ref = FirebaseStorage.instance.refFromURL(imageUrl);
-      final imageData = await ref.getData();
-
-      setState(() {
-        _imageCache[imageUrl] = imageData;
-      });
-    } catch (e) {
-      if (kDebugMode) {
-        print('Error loading image: $e');
-      }
-      _imageCache[imageUrl] = null;
-    }
   }
 
   void _showImagePreview(String imageUrl) {
-    final imageData = _imageCache[imageUrl];
-    
     showDialog(
       context: context,
       builder: (context) => Dialog(
@@ -707,9 +701,7 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
           child: Stack(
             children: [
               PhotoView(
-                imageProvider: imageData != null
-                    ? MemoryImage(imageData)
-                    : NetworkImage(imageUrl) as ImageProvider,
+                imageProvider: NetworkImage(imageUrl),
                 minScale: PhotoViewComputedScale.contained,
                 maxScale: PhotoViewComputedScale.covered * 2,
               ),
@@ -869,9 +861,7 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
         _buildDetailSection(
           icon: Icons.access_time_rounded,
           title: 'Reported',
-          content: widget.incident.timestamp != null
-              ? DateFormat('MMMM d, y - h:mm a').format(widget.incident.timestamp!.toDate())
-              : 'Unknown time',
+          content: widget.incident.formattedDate,
         ),
         if (widget.incident.contactNumber != null)
           _buildDetailSection(
@@ -1031,7 +1021,6 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
             itemCount: widget.incident.imageUrls.length,
             itemBuilder: (context, index) {
               final imageUrl = widget.incident.imageUrls[index]?.toString() ?? '';
-              final imageData = _imageCache[imageUrl];
 
               return Container(
                 margin: const EdgeInsets.only(right: 12),
@@ -1046,7 +1035,18 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
                         width: 120,
                         height: 120,
                         color: Colors.grey[200],
-                        child: _buildImageWidget(imageUrl, imageData),
+                        child: Image.network(
+                          imageUrl,
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return Container(
+                              color: Colors.grey[300],
+                              child: const Center(
+                                child: Icon(Icons.broken_image_rounded, color: Colors.grey, size: 40),
+                              ),
+                            );
+                          },
+                        ),
                       ),
                     ),
                   ),
@@ -1056,30 +1056,6 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildImageWidget(String imageUrl, Uint8List? imageData) {
-    if (imageData == null) {
-      return Container(
-        color: Colors.grey[300],
-        child: const Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-    }
-    
-    return Image.memory(
-      imageData,
-      fit: BoxFit.cover,
-      errorBuilder: (context, error, stackTrace) {
-        return Container(
-          color: Colors.grey[300],
-          child: const Center(
-            child: Icon(Icons.broken_image_rounded, color: Colors.grey, size: 40),
-          ),
-        );
-      },
     );
   }
 
@@ -1102,8 +1078,10 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
           final timestamp = update['timestamp'];
           
           DateTime? time;
-          if (timestamp is Timestamp) {
-            time = timestamp.toDate();
+          if (timestamp is DateTime) {
+            time = timestamp;
+          } else if (timestamp is String) {
+            time = DateTime.tryParse(timestamp);
           }
           
           final timeString = time != null 
@@ -1190,138 +1168,135 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
         : _buildUserStatusSection();
   }
 
-Widget _buildAdminStatusSection() {
-  // Ensure _selectedStatus is valid and exists in status options
-  if (!IncidentConstants.statusOptions.contains(_selectedStatus)) {
-    _selectedStatus = widget.incident.status;
-  }
+  Widget _buildAdminStatusSection() {
+    if (!IncidentConstants.statusOptions.contains(_selectedStatus)) {
+      _selectedStatus = widget.incident.status;
+    }
 
-  // Create dropdown items - remove the current status to avoid duplicates
-  final availableStatusOptions = IncidentConstants.statusOptions
-      .where((status) => status != widget.incident.status)
-      .toList();
+    final availableStatusOptions = IncidentConstants.statusOptions
+        .where((status) => status != widget.incident.status)
+        .toList();
 
-  // Add the current status at the beginning to show it as selected
-  availableStatusOptions.insert(0, widget.incident.status);
+    availableStatusOptions.insert(0, widget.incident.status);
 
-  return Container(
-    padding: const EdgeInsets.all(20),
-    decoration: BoxDecoration(
-      color: Colors.grey[50],
-      borderRadius: BorderRadius.circular(16),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'UPDATE STATUS',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w700,
-            color: IncidentConstants.colorScheme['primaryDark'],
-          ),
-        ),
-        const SizedBox(height: 16),
-        DropdownButtonFormField<String>(
-          value: _selectedStatus,
-          items: availableStatusOptions.map((status) {
-            final style = StyleService.getStatusStyle(status);
-            return DropdownMenuItem<String>(
-              value: status,
-              child: Row(
-                children: [
-                  Icon(style['icon'] as IconData, color: style['color'] as Color),
-                  const SizedBox(width: 12),
-                  Text(style['label'] as String),
-                ],
-              ),
-            );
-          }).toList(),
-          onChanged: (value) async {
-            if (value != null && value != _selectedStatus) {
-              if (value == 'declined') {
-                final confirmed = await showDialog<bool>(
-                  context: context,
-                  builder: (context) => AlertDialog(
-                    title: const Text('Confirm Decline'),
-                    content: const Text('Are you sure you want to decline this incident? This action cannot be undone.'),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context, false),
-                        child: const Text('Cancel'),
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(context, true),
-                        child: Text('Decline', style: TextStyle(color: IncidentConstants.colorScheme['error'])),
-                      ),
-                    ],
-                  ),
-                );
-                
-                if (confirmed != true) return;
-              }
-              
-              setState(() {
-                _selectedStatus = value;
-              });
-            }
-          },
-          decoration: const InputDecoration(
-            border: OutlineInputBorder(),
-            filled: true,
-            fillColor: Colors.white,
-          ),
-        ),
-        const SizedBox(height: 16),
-        Form(
-          key: _formKey,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'ADD NOTE',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.grey[600],
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextFormField(
-                controller: _noteController,
-                maxLines: 3,
-                decoration: const InputDecoration(
-                  hintText: "Add a note about this update...",
-                  border: OutlineInputBorder(),
-                  filled: true,
-                  fillColor: Colors.white,
-                ),
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Please add a note';
-                  }
-                  return null;
-                },
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton(
-            onPressed: _updateStatus,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: IncidentConstants.colorScheme['primary'],
-              padding: const EdgeInsets.symmetric(vertical: 16),
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'UPDATE STATUS',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: IncidentConstants.colorScheme['primaryDark'],
             ),
-            child: const Text('SAVE UPDATE', style: TextStyle(color: Colors.white)),
           ),
-        ),
-      ],
-    ),
-  );
-}
+          const SizedBox(height: 16),
+          DropdownButtonFormField<String>(
+            value: _selectedStatus,
+            items: availableStatusOptions.map((status) {
+              final style = StyleService.getStatusStyle(status);
+              return DropdownMenuItem<String>(
+                value: status,
+                child: Row(
+                  children: [
+                    Icon(style['icon'] as IconData, color: style['color'] as Color),
+                    const SizedBox(width: 12),
+                    Text(style['label'] as String),
+                  ],
+                ),
+              );
+            }).toList(),
+            onChanged: (value) async {
+              if (value != null && value != _selectedStatus) {
+                if (value == 'declined') {
+                  final confirmed = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('Confirm Decline'),
+                      content: const Text('Are you sure you want to decline this incident? This action cannot be undone.'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('Cancel'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: Text('Decline', style: TextStyle(color: IncidentConstants.colorScheme['error'])),
+                        ),
+                      ],
+                    ),
+                  );
+                  
+                  if (confirmed != true) return;
+                }
+                
+                setState(() {
+                  _selectedStatus = value;
+                });
+              }
+            },
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              filled: true,
+              fillColor: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'ADD NOTE',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.grey[600],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextFormField(
+                  controller: _noteController,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    hintText: "Add a note about this update...",
+                    border: OutlineInputBorder(),
+                    filled: true,
+                    fillColor: Colors.white,
+                  ),
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'Please add a note';
+                    }
+                    return null;
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: _updateStatus,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: IncidentConstants.colorScheme['primary'],
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+              child: const Text('SAVE UPDATE', style: TextStyle(color: Colors.white)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildUserStatusSection() {
     final statusStyle = StyleService.getStatusStyle(widget.incident.status);
@@ -1432,7 +1407,7 @@ class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> w
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<String> _selectedIncidents = [];
-  final List<QueryDocumentSnapshot> _currentDocs = [];
+  final List<Map<String, dynamic>> _currentDocs = [];
 
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
@@ -1471,7 +1446,7 @@ class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> w
       parent: _animationController,
       curve: Curves.easeInOutQuart,
     );
-    SchedulerBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
       _animationController.forward();
     });
   }
@@ -1508,7 +1483,7 @@ class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> w
         _isMultiSelectMode = false;
       } else {
         _selectedIncidents.clear();
-        _selectedIncidents.addAll(_currentDocs.map((doc) => doc.id));
+        _selectedIncidents.addAll(_currentDocs.map((doc) => doc['id'].toString()));
         _isMultiSelectMode = true;
       }
     });
@@ -1517,17 +1492,9 @@ class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> w
   // Delete Operations
   Future<void> _deleteIncident(String id, {bool showUndo = true}) async {
     try {
-      final docSnapshot = await FirebaseFirestore.instance
-          .collection('incidents')
-          .doc(id)
-          .get();
+      final incidentData = await IncidentService.getIncident(id);
       
-      final incidentData = docSnapshot.data();
-      
-      await FirebaseFirestore.instance
-          .collection('incidents')
-          .doc(id)
-          .delete();
+      await IncidentService.batchDeleteIncidents([id]);
       
       if (showUndo && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1559,10 +1526,9 @@ class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> w
     if (data == null) return;
     
     try {
-      await FirebaseFirestore.instance
-          .collection('incidents')
-          .doc(id)
-          .set(data);
+      await Supabase.instance.client
+          .from('incidents')
+          .insert(data);
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1618,17 +1584,13 @@ class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> w
     final incidentsToDelete = <String, Map<String, dynamic>>{};
     for (final id in _selectedIncidents) {
       try {
-        final docSnapshot = await FirebaseFirestore.instance
-            .collection('incidents')
-            .doc(id)
-            .get();
-
-        if (docSnapshot.exists) {
-          incidentsToDelete[id] = docSnapshot.data()!;
+        final incidentData = await IncidentService.getIncident(id);
+        if (incidentData != null) {
+          incidentsToDelete[id] = incidentData;
         }
       } catch (e) {
         if (kDebugMode) {
-          print('Error getting document $id: $e');
+          print('Error getting incident $id: $e');
         }
       }
     }
@@ -1662,19 +1624,19 @@ class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> w
   Future<void> _undoBatchDelete(Map<String, Map<String, dynamic>> incidents) async {
     if (incidents.isEmpty) return;
 
-    final batch = FirebaseFirestore.instance.batch();
-
     for (final entry in incidents.entries) {
-      final docRef = FirebaseFirestore.instance.collection('incidents').doc(entry.key);
-      batch.set(docRef, entry.value);
+      try {
+        await Supabase.instance.client
+            .from('incidents')
+            .insert(entry.value);
+      } catch (e) {
+        if (kDebugMode) {
+          print('Error restoring incident ${entry.key}: $e');
+        }
+      }
     }
 
-    try {
-      await batch.commit();
-      _showSuccessSnackbar('Incidents restored');
-    } catch (e) {
-      _showErrorSnackbar('Failed to restore: $e');
-    }
+    _showSuccessSnackbar('Incidents restored');
   }
 
   void _clearSelection() {
@@ -1727,100 +1689,94 @@ class _AdminIncidentReportScreenState extends State<AdminIncidentReportScreen> w
     );
   }
 
-Widget _buildUserInfoHeader() {
-  return FutureBuilder<String>(
-    future: UserService.getFullName(widget.userId),
-    builder: (context, snapshot) {
-      final userName = snapshot.data ?? 'Unknown Name';
-      
-      return Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.1),
-              blurRadius: 8,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: IncidentConstants.colorScheme['primaryLight'],
-                shape: BoxShape.circle,
+  Widget _buildUserInfoHeader() {
+    return FutureBuilder<String>(
+      future: UserService.getFullName(widget.userId),
+      builder: (context, snapshot) {
+        final userName = snapshot.data ?? 'Unknown Name';
+        
+        return Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 8,
+                offset: const Offset(0, 4),
               ),
-              child: Icon(
-                Icons.person_rounded,
-                color: IncidentConstants.colorScheme['primary'],
-                size: 32,
+            ],
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: IncidentConstants.colorScheme['primaryLight'],
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.person_rounded,
+                  color: IncidentConstants.colorScheme['primary'],
+                  size: 32,
+                ),
               ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    userName,
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                      color: IncidentConstants.colorScheme['primaryDark'],
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      userName,
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                        color: IncidentConstants.colorScheme['primaryDark'],
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    widget.userEmail ?? 'No email',
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey,
-                    ),
-                  ),
-                  if (widget.userAddress != null) ...[
                     const SizedBox(height: 4),
                     Text(
-                      widget.userAddress!,
+                      widget.userEmail ?? 'No email',
                       style: const TextStyle(
-                        fontSize: 12,
+                        fontSize: 14,
                         color: Colors.grey,
                       ),
                     ),
-                  ],
-                  Text(
-                    'User ID: ${widget.userId}',
-                    style: const TextStyle(
-                      fontSize: 10,
-                      color: Colors.grey,
-                      fontFamily: 'monospace',
+                    if (widget.userAddress != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        widget.userAddress!,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
+                    Text(
+                      'User ID: ${widget.userId}',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Colors.grey,
+                        fontFamily: 'monospace',
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          ],
-        ),
-      );
-    },
-  );
-}
+            ],
+          ),
+        );
+      },
+    );
+  }
 
   AppBar _buildAppBar() {
     return AppBar(
       leading: IconButton(
         icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
         onPressed: () {
-          Navigator.pushAndRemoveUntil(
-            context,
-            MaterialPageRoute(
-              builder: (_) => const AdminPanelScreen(initialSystem: 1),
-            ),
-            (route) => false,
-          );
+          Navigator.pop(context);
         },
       ),
       title: FutureBuilder<String>(
@@ -1828,7 +1784,6 @@ Widget _buildUserInfoHeader() {
         builder: (context, snapshot) {
           final fullName = snapshot.data ?? widget.userName ?? "USER";
           
-          // Extract first name only
           String firstName = fullName;
           if (fullName.contains(' ')) {
             firstName = fullName.split(' ').first;
@@ -2045,7 +2000,7 @@ Widget _buildUserInfoHeader() {
   }
 
   Widget _buildEmergencyList() {
-    return StreamBuilder<QuerySnapshot>(
+    return StreamBuilder<List<Map<String, dynamic>>>(
       stream: IncidentService.getIncidentsStream(userId: widget.userId),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
@@ -2056,11 +2011,11 @@ Widget _buildUserInfoHeader() {
           return _buildLoadingState();
         }
 
-        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+        if (!snapshot.hasData || snapshot.data!.isEmpty) {
           return _buildEmptyState();
         }
 
-        final filteredDocs = _filterEmergencies(snapshot.data!.docs);
+        final filteredDocs = _filterEmergencies(snapshot.data!);
         _currentDocs.clear();
         _currentDocs.addAll(filteredDocs);
 
@@ -2077,24 +2032,16 @@ Widget _buildUserInfoHeader() {
             separatorBuilder: (context, index) => const SizedBox(height: 12),
             itemBuilder: (context, index) {
               final doc = filteredDocs[index];
-              final incident = Incident.fromDocument(doc);
-              
-              if (!kIsWeb) {
-                for (final url in incident.imageUrls) {
-                  if (url is String) {
-                    DefaultCacheManager().getSingleFile(url);
-                  }
-                }
-              }
+              final incident = Incident.fromMap(doc);
               
               return IncidentCard(
                 incident: incident,
                 onTap: () => _showEmergencyDetails(doc),
                 userRole: widget.userRole,
                 isSelectable: _isMultiSelectMode,
-                isSelected: _selectedIncidents.contains(doc.id),
-                onSelect: () => _selectIncident(doc.id),
-                onDelete: () => _deleteIncident(doc.id),
+                isSelected: _selectedIncidents.contains(doc['id'].toString()),
+                onSelect: () => _selectIncident(doc['id'].toString()),
+                onDelete: () => _deleteIncident(doc['id'].toString()),
                 showDeleteButton: _selectedFilter == 'all',
               );
             },
@@ -2172,7 +2119,7 @@ Widget _buildUserInfoHeader() {
           const Text(
             'Try adjusting your search or filters',
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.black),
+            style: TextStyle(color: Colors.grey),
           ),
           const SizedBox(height: 16),
           ElevatedButton(
@@ -2193,41 +2140,42 @@ Widget _buildUserInfoHeader() {
     );
   }
 
-  List<QueryDocumentSnapshot> _filterEmergencies(List<QueryDocumentSnapshot> docs) {
+  List<Map<String, dynamic>> _filterEmergencies(List<Map<String, dynamic>> docs) {
     final now = DateTime.now();
     final startOfToday = DateTime(now.year, now.month, now.day);
     
     return docs.where((doc) {
-      final data = doc.data() as Map<String, dynamic>;
-      final location = (data['address'] ?? '').toString().toLowerCase();
-      final type = (data['incidentType'] ?? '').toString().toLowerCase();
-      final timestamp = data['timestamp'] as Timestamp?;
+      final location = (doc['address'] ?? '').toString().toLowerCase();
+      final type = (doc['incident_type'] ?? '').toString().toLowerCase();
+      final timestamp = doc['timestamp'];
       
-      // Apply time filter
-      if (_selectedFilter == 'recent' && timestamp != null) {
-        final reportTime = timestamp.toDate();
+      DateTime? reportTime;
+      if (timestamp is DateTime) {
+        reportTime = timestamp;
+      } else if (timestamp is String) {
+        reportTime = DateTime.tryParse(timestamp);
+      }
+      
+      if (_selectedFilter == 'recent' && reportTime != null) {
         if (reportTime.isBefore(startOfToday)) {
           return false;
         }
       }
       
-      // Apply date filter if selected
-      if (_selectedDate != null && timestamp != null) {
-        final reportDate = timestamp.toDate();
-        if (!DateUtils.isSameDay(reportDate, _selectedDate)) {
+      if (_selectedDate != null && reportTime != null) {
+        if (!DateUtils.isSameDay(reportTime, _selectedDate)) {
           return false;
         }
       }
       
-      // Apply search filter
       return _searchQuery.isEmpty ||
           location.contains(_searchQuery) ||
           type.contains(_searchQuery);
     }).toList();
   }
 
-  void _showEmergencyDetails(QueryDocumentSnapshot doc) {
-    final incident = Incident.fromDocument(doc);
+  void _showEmergencyDetails(Map<String, dynamic> doc) {
+    final incident = Incident.fromMap(doc);
 
     if (kIsWeb) {
       showDialog(

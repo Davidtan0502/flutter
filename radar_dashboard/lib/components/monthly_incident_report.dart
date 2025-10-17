@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:radar_dashboard/components/section_header.dart';
 
 class MonthlyIncidentReport extends StatefulWidget {
@@ -13,6 +13,7 @@ class MonthlyIncidentReport extends StatefulWidget {
 class _MonthlyIncidentReportState extends State<MonthlyIncidentReport> {
   int _currentSet = 0; // 0: Jan-Jun, 1: Jul-Dec
   final int _monthsPerSet = 6;
+  final SupabaseClient _supabase = Supabase.instance.client;
 
   @override
   Widget build(BuildContext context) {
@@ -33,10 +34,10 @@ class _MonthlyIncidentReportState extends State<MonthlyIncidentReport> {
               subtitle: '',
             ),
             const SizedBox(height: 20),
-            StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance
-                  .collection('incidents')
-                  .snapshots(),
+            StreamBuilder<List<Map<String, dynamic>>>(
+              stream: _supabase
+                  .from('incidents')
+                  .stream(primaryKey: ['id']),
               builder: (context, snapshot) {
                 if (!snapshot.hasData) {
                   return const SizedBox(
@@ -45,7 +46,7 @@ class _MonthlyIncidentReportState extends State<MonthlyIncidentReport> {
                   );
                 }
 
-                final incidents = snapshot.data!.docs;
+                final incidents = snapshot.data!;
                 final monthlyCounts = _calculateMonthlyCounts(incidents);
                 final currentSetCounts = _getCurrentSetCounts(monthlyCounts);
 
@@ -70,12 +71,12 @@ class _MonthlyIncidentReportState extends State<MonthlyIncidentReport> {
     );
   }
 
-  List<int> _calculateMonthlyCounts(List<QueryDocumentSnapshot> incidents) {
+  List<int> _calculateMonthlyCounts(List<Map<String, dynamic>> incidents) {
     final monthlyCounts = List<int>.filled(12, 0); // For all 12 months
 
-    for (final doc in incidents) {
-      final timestamp = doc['timestamp'] as Timestamp;
-      final date = timestamp.toDate();
+    for (final incident in incidents) {
+      final timestamp = incident['timestamp'] as String;
+      final date = DateTime.parse(timestamp);
       final month = date.month - 1; // Convert to 0-11 index
 
       if (month >= 0 && month <= 11) {
@@ -229,7 +230,7 @@ class _MonthlyIncidentReportState extends State<MonthlyIncidentReport> {
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         IconButton(
-          icon: Icon(Icons.arrow_back_ios, size: 16),
+          icon: const Icon(Icons.arrow_back_ios, size: 16),
           onPressed: hasPrevious ? () {
             setState(() {
               _currentSet--;
@@ -246,7 +247,7 @@ class _MonthlyIncidentReportState extends State<MonthlyIncidentReport> {
           ),
         ),
         IconButton(
-          icon: Icon(Icons.arrow_forward_ios, size: 16),
+          icon: const Icon(Icons.arrow_forward_ios, size: 16),
           onPressed: hasNext ? () {
             setState(() {
               _currentSet++;

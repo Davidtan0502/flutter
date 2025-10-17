@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:animations/animations.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart'; // Add this import
 import 'package:radar_dashboard/dashboard/dashboard_screen.dart';
 import 'package:radar_dashboard/screens/analytics_screen.dart';
 import 'package:radar_dashboard/screens/incident_report_screen.dart';
 import 'package:radar_dashboard/screens/mapping_screen.dart';
 import 'package:radar_dashboard/screens/settings_screen.dart';
 import 'package:radar_dashboard/login/login_register_screen.dart';
-import 'package:radar_dashboard/notifications/notification_screen.dart'; // Import the notification screen
+import 'package:radar_dashboard/notifications/notification_screen.dart';
 
 class NavigationScreen extends StatefulWidget {
   final bool isDarkMode;
@@ -28,6 +28,7 @@ class NavigationScreen extends StatefulWidget {
 class _NavigationScreenState extends State<NavigationScreen>
     with TickerProviderStateMixin {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final SupabaseClient _supabase = Supabase.instance.client; // Add Supabase client
   int _selectedIndex = 0;
   int _previousIndex = 0;
 
@@ -114,7 +115,6 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   @override
   Widget build(BuildContext context) {
-    // ignore: unused_local_variable
     final colorScheme = Theme.of(context).colorScheme;
 
     return Scaffold(
@@ -351,13 +351,27 @@ class _NavigationScreenState extends State<NavigationScreen>
     );
 
     if (confirm == true) {
-      await FirebaseAuth.instance.signOut();
-      if (context.mounted) {
-        Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(builder: (context) => const LoginRegisterScreen()),
-          (route) => false,
-        );
+      try {
+        // Use Supabase signOut instead of Firebase
+        await _supabase.auth.signOut();
+        
+        if (context.mounted) {
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (context) => const LoginRegisterScreen()),
+            (route) => false,
+          );
+        }
+      } catch (e) {
+        debugPrint('Sign out error: $e');
+        // Even if there's an error, navigate to login screen
+        if (context.mounted) {
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (context) => const LoginRegisterScreen()),
+            (route) => false,
+          );
+        }
       }
     }
   }

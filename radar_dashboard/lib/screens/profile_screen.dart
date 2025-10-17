@@ -1,8 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
@@ -16,9 +14,7 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   final ImagePicker _picker = ImagePicker();
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseStorage _storage = FirebaseStorage.instance;
+  final SupabaseClient _supabase = Supabase.instance.client;
   
   bool _isUploading = false;
   bool _isEditing = false;
@@ -38,7 +34,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final Color _accentColor = const Color(0xFF48BB78);
   final Color _errorColor = const Color(0xFFF56565);
   final Color _warningColor = const Color(0xFFED8936);
-  final Color _cardColor = Colors.white;
+  // Removed unused _cardColor field
+
   Color get _scaffoldBackground => Theme.of(context).colorScheme.surfaceContainerHighest;
 
   // Web responsiveness
@@ -65,24 +62,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (pickedFile != null) {
         setState(() => _isUploading = true);
 
-        final user = _auth.currentUser;
+        final user = _supabase.auth.currentUser;
         if (user == null) return;
 
         final file = File(pickedFile.path);
-        final ref = _storage.ref()
-            .child('profile_pictures')
-            .child('${user.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg');
+        final fileBytes = await file.readAsBytes();
+        final fileName = '${user.id}_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
-        final uploadTask = ref.putFile(file);
-        final snapshot = await uploadTask.whenComplete(() {});
-        final downloadUrl = await snapshot.ref.getDownloadURL();
+        // Upload to Supabase Storage - fixed the file upload issue
+        final uploadResponse = await _supabase.storage
+            .from('profile_pictures')
+            .uploadBinary(
+              fileName, 
+              fileBytes, 
+              fileOptions: const FileOptions(
+                upsert: true,
+                contentType: 'image/jpeg',
+              ),
+            );
 
-        await _firestore.collection("dashboard_users")
-            .doc(user.uid)
+        // Get public URL
+        final publicUrlResponse = _supabase.storage
+            .from('profile_pictures')
+            .getPublicUrl(fileName);
+
+        // Update user profile in database
+        await _supabase
+            .from('dashboard_users')
             .update({
-              "personal_details.profilePicture": downloadUrl,
-              "personal_details.lastUpdated": Timestamp.now(),
-            });
+              'personal_details': {
+                'profilePicture': publicUrlResponse,
+                'lastUpdated': DateTime.now().toIso8601String(),
+              }
+            })
+            .eq('id', user.id);
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -120,24 +133,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
     try {
       setState(() => _isUploading = true);
 
-      final user = _auth.currentUser;
+      final user = _supabase.auth.currentUser;
       if (user == null) return;
 
       final updatedData = {
-        "personal_details.firstName": _firstNameController.text.trim(),
-        "personal_details.lastName": _lastNameController.text.trim(),
-        "personal_details.phoneNumber": _phoneController.text.trim(),
-        "personal_details.emergencyContact": _emergencyContactController.text.trim(),
-        "personal_details.emergencyPhone": _emergencyPhoneController.text.trim(),
-        "personal_details.dateOfBirth": _selectedDob != null 
-            ? Timestamp.fromDate(_selectedDob!) 
-            : null,
-        "personal_details.lastUpdated": Timestamp.now(),
+        'personal_details': {
+          'firstName': _firstNameController.text.trim(),
+          'lastName': _lastNameController.text.trim(),
+          'phoneNumber': _phoneController.text.trim(),
+          'emergencyContact': _emergencyContactController.text.trim(),
+          'emergencyPhone': _emergencyPhoneController.text.trim(),
+          'dateOfBirth': _selectedDob?.toIso8601String(),
+          'lastUpdated': DateTime.now().toIso8601String(),
+        }
       };
 
-      await _firestore.collection("dashboard_users")
-          .doc(user.uid)
-          .update(updatedData);
+      await _supabase
+          .from('dashboard_users')
+          .update(updatedData)
+          .eq('id', user.id);
 
       setState(() => _isEditing = false);
 
@@ -171,36 +185,42 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  Future<void> _selectDate(BuildContext context) async {
-    final DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: _selectedDob ?? DateTime.now().subtract(const Duration(days: 365 * 18)),
-      firstDate: DateTime(1900),
-      lastDate: DateTime.now(),
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: ColorScheme.light(
-              primary: _primaryColor,
-              onPrimary: Colors.white,
-              onSurface: Colors.black,
-            ),
-            textButtonTheme: TextButtonThemeData(
-              style: TextButton.styleFrom(
-                foregroundColor: _primaryColor,
-              ),
-            ),
-            dialogBackgroundColor: Colors.white,
+Future<void> _selectDate(BuildContext context) async {
+  final DateTime? picked = await showDatePicker(
+    context: context,
+    initialDate: _selectedDob ?? DateTime.now().subtract(const Duration(days: 365 * 18)),
+    firstDate: DateTime(1900),
+    lastDate: DateTime.now(),
+    builder: (context, child) {
+      return Theme(
+        data: Theme.of(context).copyWith(
+          colorScheme: ColorScheme.light(
+            primary: _primaryColor,
+            onPrimary: Colors.white,
+            onSurface: Colors.black,
           ),
-          child: child!,
-        );
-      },
-    );
-    
-    if (picked != null && picked != _selectedDob) {
-      setState(() => _selectedDob = picked);
-    }
+          textButtonTheme: TextButtonThemeData(
+            style: TextButton.styleFrom(
+              foregroundColor: _primaryColor,
+            ),
+          ),
+          // Use DialogThemeData for newer Flutter versions
+          dialogTheme: DialogThemeData(
+            backgroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+        ),
+        child: child!,
+      );
+    },
+  );
+  
+  if (picked != null && picked != _selectedDob) {
+    setState(() => _selectedDob = picked);
   }
+}
 
   void _showImageSourceDialog() {
     showDialog(
@@ -414,7 +434,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _emergencyPhoneController.text = personalDetails['emergencyPhone'] ?? '';
     
     if (personalDetails['dateOfBirth'] != null) {
-      _selectedDob = (personalDetails['dateOfBirth'] as Timestamp).toDate();
+      _selectedDob = DateTime.parse(personalDetails['dateOfBirth'] as String);
     }
   }
 
@@ -548,7 +568,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       systemNavigationBarIconBrightness: Brightness.dark,
     ));
     
-    final user = _auth.currentUser;
+    final user = _supabase.auth.currentUser;
     final screenWidth = MediaQuery.of(context).size.width;
     final isLargeScreen = screenWidth > 768;
 
@@ -633,8 +653,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
         ],
       ),
-      body: StreamBuilder<DocumentSnapshot>(
-        stream: _firestore.collection("dashboard_users").doc(user.uid).snapshots(),
+      body: StreamBuilder<Map<String, dynamic>?>(
+        stream: _supabase
+            .from('dashboard_users')
+            .stream(primaryKey: ['id'])
+            .eq('id', user.id)
+            .map((data) => data.isNotEmpty ? data.first : null),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return Center(
@@ -658,7 +682,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             );
           }
 
-          if (!snapshot.hasData || snapshot.data!.data() == null) {
+          if (!snapshot.hasData || snapshot.data == null) {
             return Center(
               child: Container(
                 constraints: const BoxConstraints(maxWidth: 400),
@@ -695,7 +719,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             );
           }
 
-          final userData = snapshot.data!.data() as Map<String, dynamic>;
+          final userData = snapshot.data!;
           final personalDetails = userData['personal_details'] as Map<String, dynamic>? ?? {};
           final userRole = userData['role']?.toString() ?? 'user';
           
@@ -712,7 +736,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           final emergencyContact = personalDetails["emergencyContact"] ?? "";
           final emergencyPhone = personalDetails["emergencyPhone"] ?? "";
           final dob = personalDetails["dateOfBirth"] != null
-              ? DateFormat('MMMM dd, yyyy').format((personalDetails["dateOfBirth"] as Timestamp).toDate())
+              ? DateFormat('MMMM dd, yyyy').format(DateTime.parse(personalDetails["dateOfBirth"] as String))
               : "Not set";
 
           return Stack(

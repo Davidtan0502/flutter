@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:radar_dashboard/dashboard/dashboard_screen.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:radar_dashboard/login/admin/mobile_user_card.dart';
 import 'package:radar_dashboard/login/admin/dashboard_user_card.dart';
 import 'package:radar_dashboard/login/admin/users_search_bar.dart';
@@ -19,6 +18,7 @@ class AdminPanelScreen extends StatefulWidget {
 class _AdminPanelScreenState extends State<AdminPanelScreen> {
   late int _selectedSystem;
   String _searchQuery = '';
+  final SupabaseClient _supabase = Supabase.instance.client;
 
   @override
   void initState() {
@@ -27,7 +27,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
   }
 
   // Getters for system configuration
-  String get _currentCollection => _selectedSystem == 0 ? 'dashboard_users' : 'users';
+  String get _currentTable => _selectedSystem == 0 ? 'dashboard_users' : 'users';
   String get _systemTitle => _selectedSystem == 0 ? 'Dashboard System' : 'Radar App System';
   String get _systemDescription => _selectedSystem == 0 
       ? 'Manage dashboard user roles and permissions' 
@@ -208,11 +208,13 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
   }
 
   Widget _buildLiveStats() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance.collection(_currentCollection).snapshots(),
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: _supabase
+          .from(_currentTable)
+          .stream(primaryKey: ['id']),
       builder: (context, snapshot) {
         if (!snapshot.hasData) return _buildLoadingText();
-        final users = snapshot.data!.docs;
+        final users = snapshot.data!;
         final filteredUsers = _selectedSystem == 1 ? _filterRadarUsers(users) : users;
         return _buildStatsChips(users, filteredUsers);
       },
@@ -230,7 +232,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
     );
   }
 
-  Widget _buildStatsChips(List<QueryDocumentSnapshot> allUsers, List<QueryDocumentSnapshot> filteredUsers) {
+  Widget _buildStatsChips(List<Map<String, dynamic>> allUsers, List<Map<String, dynamic>> filteredUsers) {
     final chips = _selectedSystem == 1 
         ? _buildRadarSystemChips(allUsers, filteredUsers)
         : _buildDashboardSystemChips(allUsers);
@@ -242,7 +244,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
     );
   }
 
-  List<Widget> _buildRadarSystemChips(List<QueryDocumentSnapshot> allUsers, List<QueryDocumentSnapshot> filteredUsers) {
+  List<Widget> _buildRadarSystemChips(List<Map<String, dynamic>> allUsers, List<Map<String, dynamic>> filteredUsers) {
     final activeUsers = filteredUsers.where((user) => _isUserActive(user)).length;
     final emergencyReports = _calculateEmergencyReports(filteredUsers);
 
@@ -254,7 +256,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
     ];
   }
 
-  List<Widget> _buildDashboardSystemChips(List<QueryDocumentSnapshot> allUsers) {
+  List<Widget> _buildDashboardSystemChips(List<Map<String, dynamic>> allUsers) {
     final adminCount = allUsers.where((user) => _isAdmin(user)).length;
 
     return [
@@ -287,7 +289,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
     return Container(
       height: 150,
       child: UsersStatisticsSection(
-        collection: _currentCollection,
+        collection: _currentTable, // Keep using 'collection' parameter name for compatibility
         systemType: _selectedSystem,
         searchQuery: _searchQuery,
       ),
@@ -315,38 +317,74 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
     );
   }
 
-  Widget _buildUsersList() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection(_currentCollection)
-          .orderBy(_selectedSystem == 0 ? 'email' : 'createdAt', descending: true)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return _buildLoadingState();
+// In your AdminPanelScreen, update the stream to handle service role
+Widget _buildUsersList() {
+  return StreamBuilder<List<Map<String, dynamic>>>(
+    stream: _supabase
+        .from(_currentTable)
+        .stream(primaryKey: ['id'])
+        .order(_selectedSystem == 0 ? 'email' : 'created_at', ascending: false),
+    builder: (context, snapshot) {
+      if (snapshot.connectionState == ConnectionState.waiting) {
+        return _buildLoadingState();
+      }
+
+      if (snapshot.hasError) {
+        // Handle RLS policy errors gracefully
+        if (snapshot.error.toString().contains('row-level security')) {
+          return _buildRLSErrorState();
         }
+        return _buildErrorState(snapshot.error.toString());
+      }
 
-        if (snapshot.hasError) {
-          return _buildErrorState(snapshot.error.toString());
-        }
+      if (!snapshot.hasData || snapshot.data!.isEmpty) {
+        return _buildEmptyState();
+      }
 
-        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          return _buildEmptyState();
-        }
+      final users = snapshot.data!;
+      final displayUsers = _selectedSystem == 1 ? _filterRadarUsers(users) : users;
 
-        final users = snapshot.data!.docs;
-        final displayUsers = _selectedSystem == 1 ? _filterRadarUsers(users) : users;
+      if (_selectedSystem == 1 && displayUsers.isEmpty && _searchQuery.isNotEmpty) {
+        return _buildNoResultsState();
+      }
 
-        if (_selectedSystem == 1 && displayUsers.isEmpty && _searchQuery.isNotEmpty) {
-          return _buildNoResultsState();
-        }
+      return _buildUsersCard(displayUsers, users.length);
+    },
+  );
+}
 
-        return _buildUsersCard(displayUsers, users.length);
-      },
-    );
-  }
-
-  Widget _buildUsersCard(List<QueryDocumentSnapshot> displayUsers, int totalUsers) {
+// Add RLS error state
+Widget _buildRLSErrorState() {
+  return Center(
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Icon(Icons.security, size: 80, color: Colors.orange),
+        const SizedBox(height: 20),
+        const Text(
+          'Security Policy Restriction',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 12),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 20),
+          child: Text(
+            'Unable to load all users due to security policies. '
+            'Only users you have permission to view are shown.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 14),
+          ),
+        ),
+        const SizedBox(height: 20),
+        ElevatedButton(
+          onPressed: () => setState(() {}),
+          child: const Text('Retry'),
+        ),
+      ],
+    ),
+  );
+}
+  Widget _buildUsersCard(List<Map<String, dynamic>> displayUsers, int totalUsers) {
     return Container(
       padding: const EdgeInsets.all(16.0),
       decoration: BoxDecoration(
@@ -463,7 +501,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
     );
   }
 
-  Widget _buildUsersListContent(List<QueryDocumentSnapshot> displayUsers) {
+  Widget _buildUsersListContent(List<Map<String, dynamic>> displayUsers) {
     return Expanded(
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 8.0),
@@ -480,13 +518,9 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
         child: ListView.separated(
           padding: const EdgeInsets.all(12.0),
           itemCount: displayUsers.length,
-          separatorBuilder: (context, index) => Container(
-            height: 4.0,
-            margin: const EdgeInsets.symmetric(vertical: 6.0),
-          ),
+          separatorBuilder: (context, index) => const SizedBox(height: 8.0),
           itemBuilder: (context, index) {
             final user = displayUsers[index];
-            final data = user.data() as Map<String, dynamic>;
             
             return Container(
               padding: const EdgeInsets.all(4.0),
@@ -504,15 +538,13 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
               ),
               child: _selectedSystem == 0 
                   ? DashboardUserCard(
-                      user: user, 
-                      data: data,
+                      userData: user, // Pass the user data directly
                       onUserDeleted: () {
                         setState(() {});
                       },
                     )
                   : RadarAppUserCard(
-                      user: user, 
-                      data: data,
+                      userData: user, // Pass the user data directly
                       searchQuery: _searchQuery,
                       onUserDeleted: () {
                         setState(() {});
@@ -626,7 +658,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
             "Try adjusting your search terms",
             style: TextStyle(
               fontSize: 14,
-              color: Colors.black
+              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6)
             ),
           ),
           const SizedBox(height: 20),
@@ -643,41 +675,43 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
   }
 
   // Helper methods
-  List<QueryDocumentSnapshot> _filterRadarUsers(List<QueryDocumentSnapshot> users) {
+  List<Map<String, dynamic>> _filterRadarUsers(List<Map<String, dynamic>> users) {
     if (_searchQuery.isEmpty) return users;
     
-    return users.where((userDoc) {
-      final userData = userDoc.data() as Map<String, dynamic>;
-      final email = userData['email']?.toString().toLowerCase() ?? '';
-      final name = userData['name']?.toString().toLowerCase() ?? '';
-      final role = userData['role']?.toString().toLowerCase() ?? '';
-      final address = userData['address']?.toString().toLowerCase() ?? '';
+    final query = _searchQuery.toLowerCase();
+    return users.where((user) {
+      final email = user['email']?.toString().toLowerCase() ?? '';
+      final name = user['name']?.toString().toLowerCase() ?? '';
+      final role = user['role']?.toString().toLowerCase() ?? '';
+      final address = user['address']?.toString().toLowerCase() ?? '';
 
-      return email.contains(_searchQuery) ||
-             name.contains(_searchQuery) ||
-             role.contains(_searchQuery) ||
-             address.contains(_searchQuery);
+      return email.contains(query) ||
+             name.contains(query) ||
+             role.contains(query) ||
+             address.contains(query);
     }).toList();
   }
 
-  bool _isUserActive(QueryDocumentSnapshot user) {
-    final data = user.data() as Map<String, dynamic>;
-    final lastActive = data['lastActive'] as Timestamp?;
+  bool _isUserActive(Map<String, dynamic> user) {
+    final lastActive = user['last_active'];
     if (lastActive == null) return false;
+    
+    final lastActiveTime = DateTime.tryParse(lastActive.toString());
+    if (lastActiveTime == null) return false;
+    
     final twentyFourHoursAgo = DateTime.now().subtract(const Duration(hours: 24));
-    return lastActive.toDate().isAfter(twentyFourHoursAgo);
+    return lastActiveTime.isAfter(twentyFourHoursAgo);
   }
 
-  int _calculateEmergencyReports(List<QueryDocumentSnapshot> users) {
+  int _calculateEmergencyReports(List<Map<String, dynamic>> users) {
     return users.fold<int>(0, (total, user) {
-      final data = user.data() as Map<String, dynamic>;
-      return total + ((data['emergencyReports'] ?? 0) as int);
+      final reports = user['emergency_reports'];
+      return total + (reports is int ? reports : 0);
     });
   }
 
-  bool _isAdmin(QueryDocumentSnapshot user) {
-    final data = user.data() as Map<String, dynamic>;
-    return data['role'] == 'admin';
+  bool _isAdmin(Map<String, dynamic> user) {
+    return user['role'] == 'admin';
   }
 
   void _navigateBackToMain() {

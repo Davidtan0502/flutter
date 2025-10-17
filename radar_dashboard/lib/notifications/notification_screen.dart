@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:shimmer/shimmer.dart';
 
@@ -18,17 +18,17 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   String _selectedFilter = 'unread';
-  DateTime? _selectedDate;
   final List<String> _selectedNotifications = [];
   bool _isMultiSelectMode = false;
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   final ScrollController _scrollController = ScrollController();
-  bool _isLoading = false;
   bool _hasNewUpdates = false;
-  List<QueryDocumentSnapshot> _currentNotifications = [];
-  StreamSubscription<QuerySnapshot>? _notificationSubscription;
+  List<Map<String, dynamic>> _currentNotifications = [];
+  StreamSubscription<List<Map<String, dynamic>>>? _notificationSubscription;
   int _unreadCount = 0;
+
+  final SupabaseClient _supabase = Supabase.instance.client;
 
   @override
   void initState() {
@@ -63,16 +63,16 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
   }
 
   void _startNotificationListener() {
-    _notificationSubscription = FirebaseFirestore.instance
-        .collection('incidents')
-        .orderBy('timestamp', descending: true)
-        .snapshots()
-        .listen((snapshot) {
-      // Check for new notifications
+    _notificationSubscription = _supabase
+        .from('incidents')
+        .stream(primaryKey: ['id'])
+        .order('timestamp', ascending: false)
+        .listen((List<Map<String, dynamic>> incidents) {
       if (mounted) {
         setState(() {
-          _unreadCount = snapshot.docs
-              .where((doc) => (doc.data() as Map<String, dynamic>)['read'] != true)
+          _currentNotifications = incidents;
+          _unreadCount = incidents
+              .where((incident) => incident['read'] != true)
               .length;
         });
       }
@@ -121,15 +121,17 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
 
   Future<void> _refreshData() async {
     setState(() {
-      _isLoading = true;
       _hasNewUpdates = false;
     });
     
+    // Force refresh by re-fetching data
+    _startNotificationListener();
+    
     await Future.delayed(const Duration(seconds: 1));
     
-    setState(() {
-      _isLoading = false;
-    });
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   void _toggleMultiSelectMode() {
@@ -157,14 +159,15 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
 
   void _selectAllNotifications() {
     setState(() {
-      if (_selectedNotifications.length == _currentNotifications.length) {
+      final filteredNotifications = _getFilteredNotifications();
+      if (_selectedNotifications.length == filteredNotifications.length) {
         // If all are selected, deselect all
         _selectedNotifications.clear();
         _isMultiSelectMode = false;
       } else {
-        // Select all current notifications
+        // Select all current filtered notifications
         _selectedNotifications.clear();
-        _selectedNotifications.addAll(_currentNotifications.map((doc) => doc.id));
+        _selectedNotifications.addAll(filteredNotifications.map((incident) => incident['id'].toString()));
         _isMultiSelectMode = true;
       }
     });
@@ -174,39 +177,23 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
     if (ids.isEmpty) return;
 
     try {
-      final batch = FirebaseFirestore.instance.batch();
-      final previousStates = <String, bool>{};
-
+      // Update all selected incidents to read
       for (final id in ids) {
-        final docRef = FirebaseFirestore.instance.collection('incidents').doc(id);
-        final snapshot = await docRef.get();
-        previousStates[id] = snapshot['read'] == true; // save old state
-
-        batch.update(docRef, {
-          'read': true,
-          'lastUpdated': FieldValue.serverTimestamp(),
-        });
+        await _supabase
+            .from('incidents')
+            .update({
+              'read': true,
+              'updated_at': DateTime.now().toUtc().toIso8601String(),
+            })
+            .eq('id', id);
       }
-
-      await batch.commit();
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Marked ${ids.length} as read'),
+            content: Text('Marked ${ids.length} notification${ids.length > 1 ? 's' : ''} as read'),
             backgroundColor: Colors.green,
-            action: SnackBarAction(
-              label: 'UNDO',
-              textColor: Colors.white,
-              onPressed: () async {
-                final undoBatch = FirebaseFirestore.instance.batch();
-                for (final entry in previousStates.entries) {
-                  final docRef = FirebaseFirestore.instance.collection('incidents').doc(entry.key);
-                  undoBatch.update(docRef, {'read': entry.value});
-                }
-                await undoBatch.commit();
-              },
-            ),
+            duration: const Duration(seconds: 2),
           ),
         );
       }
@@ -251,33 +238,36 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
     if (confirmed != true) return;
 
     try {
-      final batch = FirebaseFirestore.instance.batch();
-      
       for (final id in ids) {
-        final docRef = FirebaseFirestore.instance.collection('incidents').doc(id);
-        batch.delete(docRef);
+        await _supabase
+            .from('incidents')
+            .delete()
+            .eq('id', id);
       }
       
-      await batch.commit();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Deleted ${ids.length} notification${ids.length > 1 ? 's' : ''}'),
-          backgroundColor: Colors.green,
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Deleted ${ids.length} notification${ids.length > 1 ? 's' : ''}'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
       
       setState(() {
         _selectedNotifications.clear();
         _isMultiSelectMode = false;
       });
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to delete: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
@@ -303,74 +293,87 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
     if (confirmed != true) return;
 
     try {
-      final querySnapshot = await FirebaseFirestore.instance
-          .collection('incidents')
-          .get();
+      // Get all incident IDs first
+      final response = await _supabase
+          .from('incidents')
+          .select('id');
 
-      final batch = FirebaseFirestore.instance.batch();
-      for (final doc in querySnapshot.docs) {
-        batch.delete(doc.reference);
+      // Delete all incidents
+      for (final incident in response) {
+        await _supabase
+            .from('incidents')
+            .delete()
+            .eq('id', incident['id']);
       }
       
-      await batch.commit();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('All notifications cleared'),
-          backgroundColor: Colors.green,
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('All notifications cleared'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to clear notifications: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to clear notifications: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
   Future<void> _markAllAsRead() async {
     try {
-      final querySnapshot = await FirebaseFirestore.instance
-          .collection('incidents')
-          .where('read', isEqualTo: false)
-          .get();
-
-      final batch = FirebaseFirestore.instance.batch();
-      for (final doc in querySnapshot.docs) {
-        batch.update(doc.reference, {
-          'read': true,
-          'lastUpdated': FieldValue.serverTimestamp(),
-        });
+      await _supabase
+          .from('incidents')
+          .update({
+            'read': true,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          })
+          .eq('read', false);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('All notifications marked as read'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
       }
-      
-      await batch.commit();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('All notifications marked as read'),
-          backgroundColor: Colors.green,
-        ),
-      );
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to mark all as read: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to mark all as read: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
   Future<void> _showNotificationDetails(Map<String, dynamic> data, String docId) async {
-    final timestamp = data['timestamp'] as Timestamp?;
-    final time = timestamp != null
-        ? DateFormat('MMM d, yyyy h:mm a').format(timestamp.toDate())
+    final timestamp = data['timestamp'];
+    DateTime? reportTime;
+    
+    if (timestamp is DateTime) {
+      reportTime = timestamp;
+    } else if (timestamp is String) {
+      reportTime = DateTime.tryParse(timestamp);
+    }
+    
+    final time = reportTime != null
+        ? DateFormat('MMM d, yyyy h:mm a').format(reportTime)
         : 'Unknown time';
 
     final location = data['address']?.toString() ?? 'Unknown location';
-    final incidentType = data['incidentType']?.toString() ?? 'Unknown type';
+    final incidentType = data['incident_type']?.toString() ?? 'Unknown type';
     final reporter = data['name']?.toString() ?? 'Anonymous';
     final status = data['status']?.toString() ?? 'pending';
     final description = data['description']?.toString() ?? 'No description provided';
@@ -378,15 +381,17 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
 
     // Mark as read when viewing details
     if (data['read'] != true) {
-      await FirebaseFirestore.instance
-          .collection('incidents')
-          .doc(docId)
+      await _supabase
+          .from('incidents')
           .update({
             'read': true,
-            'lastUpdated': FieldValue.serverTimestamp(),
-          });
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          })
+          .eq('id', docId);
     }
 
+    if (!mounted) return;
+    
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -441,7 +446,7 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
       children: [
         Icon(Icons.circle, size: 20, color: statusColor),
         const SizedBox(width: 8),
-        Text('Status: '),
+        const Text('Status: '),
         Text(
           status.toUpperCase(),
           style: TextStyle(
@@ -483,6 +488,54 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
         ),
       ],
     );
+  }
+
+  List<Map<String, dynamic>> _getFilteredNotifications() {
+    final now = DateTime.now();
+    
+    return _currentNotifications.where((incident) {
+      final location = (incident['address'] ?? '').toString().toLowerCase();
+      final type = (incident['incident_type'] ?? '').toString().toLowerCase();
+      final priority = (incident['priority'] ?? 'medium').toString().toLowerCase();
+      final timestamp = incident['timestamp'];
+      final isRead = incident['read'] == true;
+      
+      DateTime? reportTime;
+      if (timestamp is DateTime) {
+        reportTime = timestamp;
+      } else if (timestamp is String) {
+        reportTime = DateTime.tryParse(timestamp);
+      }
+      
+      // Apply filter logic
+      switch (_selectedFilter) {
+        case 'unread':
+          if (isRead) return false;
+          break;
+        case 'high':
+          if (priority != 'high') return false;
+          break;
+        case 'today':
+          if (reportTime == null || !_isSameDay(reportTime, now)) return false;
+          break;
+        case 'all':
+          // No additional filtering needed
+          break;
+      }
+      
+      // Apply search filter
+      if (_searchQuery.isNotEmpty) {
+        if (!location.contains(_searchQuery) && !type.contains(_searchQuery)) {
+          return false;
+        }
+      }
+      
+      return true;
+    }).toList();
+  }
+
+  bool _isSameDay(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
   }
 
   @override
@@ -713,7 +766,8 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
   }
 
   Widget _buildBatchActions() {
-    final allSelected = _selectedNotifications.length == _currentNotifications.length;
+    final filteredNotifications = _getFilteredNotifications();
+    final allSelected = _selectedNotifications.length == filteredNotifications.length && filteredNotifications.isNotEmpty;
     
     return Material(
       elevation: 2,
@@ -759,88 +813,36 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
   }
 
   Widget _buildNotificationList() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('incidents')
-          .orderBy('timestamp', descending: true)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return _buildErrorState(snapshot.error.toString());
-        }
+    final filteredNotifications = _getFilteredNotifications();
 
-        if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
-          return _buildLoadingState();
-        }
+    if (filteredNotifications.isEmpty) {
+      return _buildEmptyState();
+    }
 
-        final filteredDocs = _filterNotifications(snapshot.data!.docs);
-        _currentNotifications = filteredDocs;
-
-        if (filteredDocs.isEmpty) {
-          return _buildEmptyState();
-        }
-
-        return RefreshIndicator(
-          onRefresh: _refreshData,
-          child: ListView.separated(
-            controller: _scrollController,
-            padding: const EdgeInsets.only(bottom: 16),
-            itemCount: filteredDocs.length,
-            separatorBuilder: (context, index) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              final doc = filteredDocs[index];
-              final data = doc.data() as Map<String, dynamic>;
-              final isRead = data['read'] == true;
-              
-              return _NotificationCard(
-                data: data,
-                docId: doc.id,
-                getStatusColor: _getStatusColor,
-                getStatusIcon: _getStatusIcon,
-                isSelectable: _isMultiSelectMode,
-                isSelected: _selectedNotifications.contains(doc.id),
-                isRead: isRead,
-                onSelect: () => _selectNotification(doc.id),
-                onTap: () => _showNotificationDetails(data, doc.id),
-              );
-            },
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildErrorState(String error) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.error_outline, size: 64, color: Colors.red),
-          const SizedBox(height: 16),
-          const Text(
-            'Something went wrong',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            error,
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.grey),
-          ),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: _refreshData,
-            child: const Text('Try Again'),
-          ),
-        ],
+    return RefreshIndicator(
+      onRefresh: _refreshData,
+      child: ListView.separated(
+        controller: _scrollController,
+        padding: const EdgeInsets.only(bottom: 16),
+        itemCount: filteredNotifications.length,
+        separatorBuilder: (context, index) => const SizedBox(height: 12),
+        itemBuilder: (context, index) {
+          final incident = filteredNotifications[index];
+          final isRead = incident['read'] == true;
+          
+          return _NotificationCard(
+            data: incident,
+            docId: incident['id'].toString(),
+            getStatusColor: _getStatusColor,
+            getStatusIcon: _getStatusIcon,
+            isSelectable: _isMultiSelectMode,
+            isSelected: _selectedNotifications.contains(incident['id'].toString()),
+            isRead: isRead,
+            onSelect: () => _selectNotification(incident['id'].toString()),
+            onTap: () => _showNotificationDetails(incident, incident['id'].toString()),
+          );
+        },
       ),
-    );
-  }
-
-  Widget _buildLoadingState() {
-    return ListView.builder(
-      itemCount: 6,
-      itemBuilder: (context, index) => _buildShimmerCard(),
     );
   }
 
@@ -883,7 +885,7 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
               setState(() {
                 _searchQuery = '';
                 _searchController.clear();
-                _selectedDate = null;
+                _selectedFilter = 'all';
               });
             },
             child: const Text('Clear Filters'),
@@ -891,38 +893,6 @@ class _NotificationScreenState extends State<NotificationScreen> with SingleTick
         ],
       ),
     );
-  }
-
-  List<QueryDocumentSnapshot> _filterNotifications(List<QueryDocumentSnapshot> docs) {
-    final now = DateTime.now();
-    final twentyFourHoursAgo = now.subtract(const Duration(hours: 24));
-    
-    return docs.where((doc) {
-      final data = doc.data() as Map<String, dynamic>;
-      final location = (data['address'] ?? '').toString().toLowerCase();
-      final type = (data['incidentType'] ?? '').toString().toLowerCase();
-      final status = (data['status'] ?? 'pending').toString().toLowerCase();
-      final priority = (data['priority'] ?? 'medium').toString().toLowerCase();
-      final timestamp = data['timestamp'] as Timestamp?;
-      final isRead = data['read'] == true;
-      
-      // Apply filter logic
-      if (_selectedFilter == 'unread' && isRead) {
-        return false;
-      } else if (_selectedFilter == 'high' && priority != 'high') {
-        return false;
-      } else if (_selectedFilter == 'today' && timestamp != null) {
-        final reportTime = timestamp.toDate();
-        if (!DateUtils.isSameDay(reportTime, now)) {
-          return false;
-        }
-      }
-      
-      // Apply search filter
-      return _searchQuery.isEmpty ||
-          location.contains(_searchQuery) ||
-          type.contains(_searchQuery);
-    }).toList();
   }
 
   Widget _buildFloatingActionButton() {
@@ -959,16 +929,24 @@ class _NotificationCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final timestamp = data['timestamp'] as Timestamp?;
-    final time = timestamp != null
-        ? DateFormat('MMM d, h:mm a').format(timestamp.toDate())
+    final timestamp = data['timestamp'];
+    DateTime? reportTime;
+    
+    if (timestamp is DateTime) {
+      reportTime = timestamp;
+    } else if (timestamp is String) {
+      reportTime = DateTime.tryParse(timestamp);
+    }
+    
+    final time = reportTime != null
+        ? DateFormat('MMM d, h:mm a').format(reportTime)
         : 'Unknown time';
 
     final location = data['address']?.toString() ?? 'Unknown location';
-    final incidentType = data['incidentType']?.toString() ?? 'Unknown type';
+    final incidentType = data['incident_type']?.toString() ?? 'Unknown type';
     final reporter = data['name']?.toString() ?? 'Anonymous';
     final status = data['status']?.toString() ?? 'pending';
-    final iconColor = _getIncidentColor(data['incidentType']);
+    final iconColor = _getIncidentColor(data['incident_type']);
     final statusColor = getStatusColor(status);
 
     return InkWell(
@@ -1005,7 +983,7 @@ class _NotificationCard extends StatelessWidget {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: statusColor.withOpacity(0.1),
+                    color: statusColor.withAlpha(25),
                     borderRadius: const BorderRadius.only(
                       topRight: Radius.circular(15),
                       bottomLeft: Radius.circular(15),
@@ -1038,7 +1016,7 @@ class _NotificationCard extends StatelessWidget {
                       Container(
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: iconColor.withOpacity(0.1),
+                          color: iconColor.withAlpha(25),
                           shape: BoxShape.circle,
                         ),
                         child: Icon(
@@ -1133,7 +1111,7 @@ class _NotificationCard extends StatelessWidget {
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
-                      color: statusColor.withOpacity(0.1),
+                      color: statusColor.withAlpha(25),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Row(

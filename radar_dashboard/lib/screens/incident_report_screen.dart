@@ -1,7 +1,5 @@
 import 'dart:typed_data';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -9,6 +7,7 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:intl/intl.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:shimmer/shimmer.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 // Constants and Configuration
 class IncidentReportConstants {
@@ -44,9 +43,10 @@ class IncidentData {
   final String? contactNumber;
   final String? description;
   final String status;
-  final Timestamp? timestamp;
+  final DateTime? timestamp;
   final List<dynamic> imageUrls;
-  final List<dynamic> statusUpdates;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
 
   IncidentData({
     required this.id,
@@ -58,39 +58,158 @@ class IncidentData {
     required this.status,
     required this.timestamp,
     required this.imageUrls,
-    required this.statusUpdates,
+    this.createdAt,
+    this.updatedAt,
   });
 
-  factory IncidentData.fromDocument(QueryDocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+  factory IncidentData.fromMap(Map<String, dynamic> data, String id) {
     return IncidentData(
-      id: doc.id,
-      incidentType: data['incidentType']?.toString(),
+      id: id,
+      incidentType: data['incident_type']?.toString(),
       address: data['address']?.toString(),
       name: data['name']?.toString(),
-      contactNumber: data['contactNumber']?.toString(),
+      contactNumber: data['contact_number']?.toString(),
       description: data['description']?.toString(),
       status: (data['status'] ?? 'pending').toString(),
-      timestamp: data['timestamp'] as Timestamp?,
-      imageUrls: data['imageUrls'] as List<dynamic>? ?? [],
-      statusUpdates: data['statusUpdates'] as List<dynamic>? ?? [],
+      timestamp: data['timestamp'] != null 
+          ? DateTime.parse(data['timestamp'])
+          : null,
+      imageUrls: data['image_urls'] as List<dynamic>? ?? [],
+      createdAt: data['created_at'] != null 
+          ? DateTime.parse(data['created_at'])
+          : null,
+      updatedAt: data['updated_at'] != null 
+          ? DateTime.parse(data['updated_at'])
+          : null,
     );
+  }
+}
+
+class StatusUpdate {
+  final String id;
+  final String incidentId;
+  final String status;
+  final String note;
+  final String updatedBy;
+  final DateTime createdAt;
+
+  StatusUpdate({
+    required this.id,
+    required this.incidentId,
+    required this.status,
+    required this.note,
+    required this.updatedBy,
+    required this.createdAt,
+  });
+
+  factory StatusUpdate.fromMap(Map<String, dynamic> data) {
+    return StatusUpdate(
+      id: data['id'].toString(),
+      incidentId: data['incident_id'].toString(),
+      status: data['status'].toString(),
+      note: data['note']?.toString() ?? '',
+      updatedBy: data['updated_by'].toString(),
+      createdAt: DateTime.parse(data['created_at']),
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'incident_id': incidentId,
+      'status': status,
+      'note': note,
+      'updated_by': updatedBy,
+      'created_at': createdAt.toIso8601String(),
+    };
   }
 }
 
 // Service Classes
 class IncidentService {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  static final SupabaseClient _supabase = Supabase.instance.client;
 
-  static Stream<QuerySnapshot> getIncidentsStream() {
-    return _firestore
-        .collection('incidents')
-        .orderBy('timestamp', descending: true)
-        .snapshots();
+  static Future<void> createInitialIncident(
+  Map<String, dynamic> incidentData,
+) async {
+  try {
+    // Insert the main incident record
+    final response = await _supabase
+        .from('incidents')
+        .insert(incidentData)
+        .select();
+    
+    if (response.isNotEmpty) {
+      final incidentId = response.first['id'].toString();
+      
+      // Create initial status update record for 'pending'
+      await _supabase
+          .from('incident_status_updates')
+          .insert({
+            'incident_id': incidentId,
+            'status': 'pending',
+            'note': 'Incident reported',
+            'updated_by': incidentData['name'] ?? 'Anonymous',
+            'created_at': DateTime.now().toIso8601String(),
+          });
+    }
+  } catch (e) {
+    throw Exception('Failed to create incident: $e');
+  }
+}
+
+static Future<void> migrateExistingIncidents() async {
+  try {
+    // Get all incidents that don't have a status update record
+    final incidents = await _supabase
+        .from('incidents')
+        .select('id, name, timestamp, created_at');
+    
+    for (final incident in incidents) {
+      final statusUpdates = await _supabase
+          .from('incident_status_updates')
+          .select()
+          .eq('incident_id', incident['id']);
+      
+      if (statusUpdates.isEmpty) {
+        // Create initial pending status update for existing incidents
+        await _supabase
+            .from('incident_status_updates')
+            .insert({
+              'incident_id': incident['id'],
+              'status': 'pending',
+              'note': 'Incident reported',
+              'updated_by': incident['name'] ?? 'Anonymous',
+              'created_at': incident['created_at'] ?? incident['timestamp'] ?? DateTime.now().toIso8601String(),
+            });
+      }
+    }
+  } catch (e) {
+    print('Migration error: $e');
+  }
+}
+
+  static Stream<List<Map<String, dynamic>>> getIncidentsStream() {
+    return _supabase
+        .from('incidents')
+        .stream(primaryKey: ['id'])
+        .order('timestamp', ascending: false);
   }
 
   static Future<void> deleteIncident(String id) async {
-    await _firestore.collection('incidents').doc(id).delete();
+    await _supabase
+        .from('incidents')
+        .delete()
+        .eq('id', id);
+  }
+
+  static Future<List<StatusUpdate>> getStatusUpdates(String incidentId) async {
+    final response = await _supabase
+        .from('incident_status_updates')
+        .select()
+        .eq('incident_id', incidentId)
+        .order('created_at', ascending: true);
+
+    return (response as List).map((update) => StatusUpdate.fromMap(update)).toList();
   }
 
   static Future<void> updateIncidentStatus(
@@ -99,55 +218,73 @@ class IncidentService {
     required String note,
     required String updatedBy,
   }) async {
-    final doc = await _firestore.collection('incidents').doc(id).get();
-    if (!doc.exists) throw Exception("Document does not exist");
+    try {
+      // Update incident status
+      await _supabase
+          .from('incidents')
+          .update({
+            'status': status,
+            'updated_at': DateTime.now().toIso8601String(),
+          })
+          .eq('id', id);
 
-    final currentData = doc.data() as Map<String, dynamic>;
-    final currentUpdates = List<Map<String, dynamic>>.from(
-      currentData['statusUpdates'] ?? [],
-    );
-
-    final newStatusUpdate = {
-      'status': status,
-      'timestamp': Timestamp.now(),
-      'note': note,
-      'updatedBy': updatedBy,
-    };
-
-    currentUpdates.add(newStatusUpdate);
-
-    await _firestore.collection('incidents').doc(id).update({
-      'status': status,
-      'statusUpdates': currentUpdates,
-      'lastUpdated': FieldValue.serverTimestamp(),
-    });
+      // Create status update record
+      await _supabase
+          .from('incident_status_updates')
+          .insert({
+            'incident_id': id,
+            'status': status,
+            'note': note,
+            'updated_by': updatedBy,
+            'created_at': DateTime.now().toIso8601String(),
+          });
+    } catch (e) {
+      throw Exception('Failed to update incident status: $e');
+    }
   }
 
   static Future<void> batchUpdateStatus(
     List<String> ids,
     String status,
   ) async {
-    final batch = _firestore.batch();
-    final updateTime = FieldValue.serverTimestamp();
+    try {
+      for (final id in ids) {
+        // Update incident status
+        await _supabase
+            .from('incidents')
+            .update({
+              'status': status,
+              'updated_at': DateTime.now().toIso8601String(),
+            })
+            .eq('id', id);
 
-    for (final id in ids) {
-      final docRef = _firestore.collection('incidents').doc(id);
-      batch.update(docRef, {
-        'status': status,
-        'lastUpdated': updateTime,
-      });
+        // Create status update record
+        await _supabase
+            .from('incident_status_updates')
+            .insert({
+              'incident_id': id,
+              'status': status,
+              'note': 'Bulk status update',
+              'updated_by': 'Admin',
+              'created_at': DateTime.now().toIso8601String(),
+            });
+      }
+    } catch (e) {
+      throw Exception('Failed to batch update status: $e');
     }
-
-    await batch.commit();
   }
 
   static Future<void> batchDeleteIncidents(List<String> ids) async {
-    final batch = _firestore.batch();
-    for (final id in ids) {
-      final docRef = _firestore.collection('incidents').doc(id);
-      batch.delete(docRef);
+    try {
+      for (final id in ids) {
+        await _supabase
+            .from('incidents')
+            .delete()
+            .eq('id', id);
+      }
+    } catch (e) {
+      throw Exception('Failed to batch delete incidents: $e');
     }
-    await batch.commit();
   }
 }
 
@@ -268,7 +405,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<String> _selectedIncidents = [];
-  final List<QueryDocumentSnapshot> _currentDocs = [];
+  final List<Map<String, dynamic>> _currentDocs = [];
 
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
@@ -345,7 +482,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
         _isMultiSelectMode = false;
       } else {
         _selectedIncidents.clear();
-        _selectedIncidents.addAll(_currentDocs.map((doc) => doc.id));
+        _selectedIncidents.addAll(_currentDocs.map((doc) => doc['id'].toString()));
         _isMultiSelectMode = true;
       }
     });
@@ -355,18 +492,19 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
   Future<void> _deleteIncident(String id, {bool showUndo = true}) async {
     try {
       // Get the document data before deleting for potential undo
-      final docSnapshot = await FirebaseFirestore.instance
-          .collection('incidents')
-          .doc(id)
-          .get();
+      final docSnapshot = await Supabase.instance.client
+          .from('incidents')
+          .select()
+          .eq('id', id)
+          .single();
       
-      final incidentData = docSnapshot.data();
+      final incidentData = docSnapshot;
       
       // Delete the document
-      await FirebaseFirestore.instance
-          .collection('incidents')
-          .doc(id)
-          .delete();
+      await Supabase.instance.client
+          .from('incidents')
+          .delete()
+          .eq('id', id);
       
       // Show undo snackbar if requested
       if (showUndo && mounted) {
@@ -399,10 +537,9 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     if (data == null) return;
     
     try {
-      await FirebaseFirestore.instance
-          .collection('incidents')
-          .doc(id)
-          .set(data);
+      await Supabase.instance.client
+          .from('incidents')
+          .insert(data);
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -461,13 +598,14 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     final incidentsToDelete = <String, Map<String, dynamic>>{};
     for (final id in _selectedIncidents) {
       try {
-        final docSnapshot = await FirebaseFirestore.instance
-            .collection('incidents')
-            .doc(id)
-            .get();
+        final docSnapshot = await Supabase.instance.client
+            .from('incidents')
+            .select()
+            .eq('id', id)
+            .single();
 
-        if (docSnapshot.exists) {
-          incidentsToDelete[id] = docSnapshot.data()!;
+        if (docSnapshot.isNotEmpty) {
+          incidentsToDelete[id] = docSnapshot;
         }
       } catch (e) {
         if (kDebugMode) {
@@ -505,15 +643,19 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
   Future<void> _undoBatchDelete(Map<String, Map<String, dynamic>> incidents) async {
     if (incidents.isEmpty) return;
 
-    final batch = FirebaseFirestore.instance.batch();
-
     for (final entry in incidents.entries) {
-      final docRef = FirebaseFirestore.instance.collection('incidents').doc(entry.key);
-      batch.set(docRef, entry.value);
+      try {
+        await Supabase.instance.client
+            .from('incidents')
+            .insert(entry.value);
+      } catch (e) {
+        if (kDebugMode) {
+          print('Error restoring incident ${entry.key}: $e');
+        }
+      }
     }
 
     try {
-      await batch.commit();
       _showSuccessSnackbar('Incidents restored');
     } catch (e) {
       _showErrorSnackbar('Failed to restore: $e');
@@ -528,46 +670,46 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
   }
 
   // UI Components
-@override
-Widget build(BuildContext context) {
-  return Scaffold(
-    appBar: _buildAppBar(),
-    body: Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            IncidentReportConstants.colorScheme['primaryLight']!,
-            IncidentReportConstants.colorScheme['secondary']!
-          ],
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: _buildAppBar(),
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              IncidentReportConstants.colorScheme['primaryLight']!,
+              IncidentReportConstants.colorScheme['secondary']!
+            ],
+          ),
         ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildSearchBar(),
-            const SizedBox(height: 20),
-            _buildFilterSection(),
-            const SizedBox(height: 20), // Increased from 16 to 20
-            if (_isMultiSelectMode) _buildBatchActions(),
-            if (_isMultiSelectMode) const SizedBox(height: 20), // Added spacing after batch actions
-            const SizedBox(height: 8), // Small spacing before the list
-            Expanded(
-              child: FadeTransition(
-                opacity: _fadeAnimation,
-                child: _buildEmergencyList(),
+        child: Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildSearchBar(),
+              const SizedBox(height: 20),
+              _buildFilterSection(),
+              const SizedBox(height: 20),
+              if (_isMultiSelectMode) _buildBatchActions(),
+              if (_isMultiSelectMode) const SizedBox(height: 20),
+              const SizedBox(height: 8),
+              Expanded(
+                child: FadeTransition(
+                  opacity: _fadeAnimation,
+                  child: _buildEmergencyList(),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
-    ),
-    floatingActionButton: _buildFloatingActionButton(),
-  );
-}
+      floatingActionButton: _buildFloatingActionButton(),
+    );
+  }
 
   AppBar _buildAppBar() {
     return AppBar(
@@ -780,7 +922,7 @@ Widget build(BuildContext context) {
   }
 
   Widget _buildEmergencyList() {
-    return StreamBuilder<QuerySnapshot>(
+    return StreamBuilder<List<Map<String, dynamic>>>(
       stream: IncidentService.getIncidentsStream(),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
@@ -791,11 +933,11 @@ Widget build(BuildContext context) {
           return _buildLoadingState();
         }
 
-        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+        if (!snapshot.hasData || snapshot.data!.isEmpty) {
           return _buildEmptyState();
         }
 
-        final filteredDocs = _filterEmergencies(snapshot.data!.docs);
+        final filteredDocs = _filterEmergencies(snapshot.data!);
         _currentDocs.clear();
         _currentDocs.addAll(filteredDocs);
 
@@ -804,13 +946,12 @@ Widget build(BuildContext context) {
         }
 
         // Group by date for All Reports view
-        final Map<String, List<QueryDocumentSnapshot>> groupedDocs = {};
+        final Map<String, List<Map<String, dynamic>>> groupedDocs = {};
         if (_selectedFilter == 'all') {
           for (final doc in filteredDocs) {
-            final data = doc.data() as Map<String, dynamic>;
-            final timestamp = data['timestamp'] as Timestamp?;
+            final timestamp = doc['timestamp'];
             final dateKey = timestamp != null
-                ? DateFormat('yyyy-MM-dd').format(timestamp.toDate())
+                ? DateFormat('yyyy-MM-dd').format(DateTime.parse(timestamp))
                 : 'Unknown Date';
             
             if (!groupedDocs.containsKey(dateKey)) {
@@ -830,128 +971,129 @@ Widget build(BuildContext context) {
     );
   }
 
-Widget _buildGroupedList(Map<String, List<QueryDocumentSnapshot>> groupedDocs) {
-  final sortedDates = groupedDocs.keys.toList()..sort((a, b) => b.compareTo(a));
-  
-  return ListView.builder(
-    controller: _scrollController,
-    padding: const EdgeInsets.only(bottom: 16),
-    itemCount: _calculateGroupedItemCount(groupedDocs, sortedDates),
-    itemBuilder: (context, index) {
-      var currentIndex = 0;
-      
-      for (final date in sortedDates) {
-        final docs = groupedDocs[date]!;
+  Widget _buildGroupedList(Map<String, List<Map<String, dynamic>>> groupedDocs) {
+    final sortedDates = groupedDocs.keys.toList()..sort((a, b) => b.compareTo(a));
+    
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.only(bottom: 16),
+      itemCount: _calculateGroupedItemCount(groupedDocs, sortedDates),
+      itemBuilder: (context, index) {
+        var currentIndex = 0;
         
-        // Date header
-        if (index == currentIndex) {
-          return Padding(
-            padding: const EdgeInsets.only(top: 16, bottom: 8),
-            child: _buildDateHeader(date),
-          );
-        }
-        currentIndex++;
-        
-        // Documents for this date
-        for (int i = 0; i < docs.length; i++) {
+        for (final date in sortedDates) {
+          final docs = groupedDocs[date]!;
+          
+          // Date header
           if (index == currentIndex) {
-            final doc = docs[i];
-            final incident = IncidentData.fromDocument(doc);
-            
-            if (!kIsWeb) {
-              for (final url in incident.imageUrls) {
-                if (url is String) {
-                  DefaultCacheManager().getSingleFile(url);
-                }
-              }
-            }
-            
             return Padding(
-              padding: EdgeInsets.only(
-                bottom: i == docs.length - 1 ? 16.0 : 8.0, // More space after last item in group
-              ),
-              child: IncidentCard(
-                incident: incident,
-                onTap: () => _showEmergencyDetails(doc),
-                userRole: widget.userRole,
-                isSelectable: _isMultiSelectMode,
-                isSelected: _selectedIncidents.contains(doc.id),
-                onSelect: () => _selectIncident(doc.id),
-                onDelete: () => _deleteIncident(doc.id),
-                showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
-              ),
+              padding: const EdgeInsets.only(top: 16, bottom: 8),
+              child: _buildDateHeader(date),
             );
           }
           currentIndex++;
+          
+          // Documents for this date
+          for (int i = 0; i < docs.length; i++) {
+            if (index == currentIndex) {
+              final doc = docs[i];
+              final incident = IncidentData.fromMap(doc, doc['id'].toString());
+              
+              if (!kIsWeb) {
+                for (final url in incident.imageUrls) {
+                  if (url is String) {
+                    DefaultCacheManager().getSingleFile(url);
+                  }
+                }
+              }
+              
+              return Padding(
+                padding: EdgeInsets.only(
+                  bottom: i == docs.length - 1 ? 16.0 : 8.0,
+                ),
+                child: IncidentCard(
+                  incident: incident,
+                  onTap: () => _showEmergencyDetails(doc),
+                  userRole: widget.userRole,
+                  isSelectable: _isMultiSelectMode,
+                  isSelected: _selectedIncidents.contains(doc['id'].toString()),
+                  onSelect: () => _selectIncident(doc['id'].toString()),
+                  onDelete: () => _deleteIncident(doc['id'].toString()),
+                  showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
+                ),
+              );
+            }
+            currentIndex++;
+          }
         }
-      }
-      
-      return const SizedBox.shrink();
-    },
-  );
-}
+        
+        return const SizedBox.shrink();
+      },
+    );
+  }
 
-Widget _buildDateHeader(String dateKey) {
-  final date = dateKey == 'Unknown Date' 
-      ? 'Unknown Date'
-      : DateFormat('MMMM d, yyyy').format(DateTime.parse(dateKey));
-  
-  return Container(
-    padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20), // Increased vertical padding
-    decoration: BoxDecoration(
-      color: IncidentReportConstants.colorScheme['primaryLight'],
-      borderRadius: BorderRadius.circular(12), // Slightly larger radius
-      border: Border.all(
-        color: IncidentReportConstants.colorScheme['secondary']!,
-        width: 1.5, // Slightly thicker border
+  Widget _buildDateHeader(String dateKey) {
+    final date = dateKey == 'Unknown Date' 
+        ? 'Unknown Date'
+        : DateFormat('MMMM d, yyyy').format(DateTime.parse(dateKey));
+    
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
+      decoration: BoxDecoration(
+        color: IncidentReportConstants.colorScheme['primaryLight'],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: IncidentReportConstants.colorScheme['secondary']!,
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withOpacity(0.1),
-          blurRadius: 8,
-          offset: const Offset(0, 2),
-        ),
-      ],
-    ),
-    child: Row(
-      children: [
-        Icon(
-          Icons.calendar_today_rounded, 
-          size: 18, 
-          color: IncidentReportConstants.colorScheme['primary'],
-        ),
-        const SizedBox(width: 12), // Increased spacing
-        Expanded(
-          child: Text(
-            date,
-            style: TextStyle(
-              fontWeight: FontWeight.w700,
-              color: IncidentReportConstants.colorScheme['primary'],
-              fontSize: 16, // Slightly larger font
+      child: Row(
+        children: [
+          Icon(
+            Icons.calendar_today_rounded, 
+            size: 18, 
+            color: IncidentReportConstants.colorScheme['primary'],
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              date,
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: IncidentReportConstants.colorScheme['primary'],
+                fontSize: 16,
+              ),
             ),
           ),
-        ),
-        const Spacer(),
-        Text(
-          _getDaySuffix(DateTime.parse(dateKey)),
-          style: TextStyle(
-            color: IncidentReportConstants.colorScheme['primaryDark'],
-            fontSize: 14, // Slightly larger font
-            fontWeight: FontWeight.w600,
+          const Spacer(),
+          Text(
+            _getDaySuffix(DateTime.parse(dateKey)),
+            style: TextStyle(
+              color: IncidentReportConstants.colorScheme['primaryDark'],
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
           ),
-        ),
-      ],
-    ),
-  );
-}
+        ],
+      ),
+    );
+  }
 
-  int _calculateGroupedItemCount(Map<String, List<QueryDocumentSnapshot>> groupedDocs, List<String> sortedDates) {
+  int _calculateGroupedItemCount(Map<String, List<Map<String, dynamic>>> groupedDocs, List<String> sortedDates) {
     int count = groupedDocs.length; // Date headers
     for (final docs in groupedDocs.values) {
       count += docs.length; // Documents
     }
     return count;
   }
+
   String _getDaySuffix(DateTime date) {
     final day = date.day;
     if (day >= 11 && day <= 13) return '${day}th';
@@ -963,40 +1105,40 @@ Widget _buildDateHeader(String dateKey) {
     }
   }
 
-Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
-  return ListView.separated(
-    controller: _scrollController,
-    padding: const EdgeInsets.only(bottom: 16),
-    itemCount: filteredDocs.length,
-    separatorBuilder: (context, index) => const SizedBox(height: 16), // Increased from 12 to 16
-    itemBuilder: (context, index) {
-      final doc = filteredDocs[index];
-      final incident = IncidentData.fromDocument(doc);
-      
-      if (!kIsWeb) {
-        for (final url in incident.imageUrls) {
-          if (url is String) {
-            DefaultCacheManager().getSingleFile(url);
+  Widget _buildRegularList(List<Map<String, dynamic>> filteredDocs) {
+    return ListView.separated(
+      controller: _scrollController,
+      padding: const EdgeInsets.only(bottom: 16),
+      itemCount: filteredDocs.length,
+      separatorBuilder: (context, index) => const SizedBox(height: 16),
+      itemBuilder: (context, index) {
+        final doc = filteredDocs[index];
+        final incident = IncidentData.fromMap(doc, doc['id'].toString());
+        
+        if (!kIsWeb) {
+          for (final url in incident.imageUrls) {
+            if (url is String) {
+              DefaultCacheManager().getSingleFile(url);
+            }
           }
         }
-      }
-      
-      return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4.0), // Added horizontal padding
-        child: IncidentCard(
-          incident: incident,
-          onTap: () => _showEmergencyDetails(doc),
-          userRole: widget.userRole,
-          isSelectable: _isMultiSelectMode,
-          isSelected: _selectedIncidents.contains(doc.id),
-          onSelect: () => _selectIncident(doc.id),
-          onDelete: () => _deleteIncident(doc.id),
-          showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
-        ),
-      );
-    },
-  );
-}
+        
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4.0),
+          child: IncidentCard(
+            incident: incident,
+            onTap: () => _showEmergencyDetails(doc),
+            userRole: widget.userRole,
+            isSelectable: _isMultiSelectMode,
+            isSelected: _selectedIncidents.contains(doc['id'].toString()),
+            onSelect: () => _selectIncident(doc['id'].toString()),
+            onDelete: () => _deleteIncident(doc['id'].toString()),
+            showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
+          ),
+        );
+      },
+    );
+  }
 
   Widget _buildErrorState(String error) {
     return Center(
@@ -1089,19 +1231,18 @@ Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
     );
   }
 
-  List<QueryDocumentSnapshot> _filterEmergencies(List<QueryDocumentSnapshot> docs) {
+  List<Map<String, dynamic>> _filterEmergencies(List<Map<String, dynamic>> docs) {
     final now = DateTime.now();
     final startOfToday = DateTime(now.year, now.month, now.day);
     
     return docs.where((doc) {
-      final data = doc.data() as Map<String, dynamic>;
-      final location = (data['address'] ?? '').toString().toLowerCase();
-      final type = (data['incidentType'] ?? '').toString().toLowerCase();
-      final timestamp = data['timestamp'] as Timestamp?;
+      final location = (doc['address'] ?? '').toString().toLowerCase();
+      final type = (doc['incident_type'] ?? '').toString().toLowerCase();
+      final timestamp = doc['timestamp'];
       
       // Apply time filter
       if (_selectedFilter == 'recent' && timestamp != null) {
-        final reportTime = timestamp.toDate();
+        final reportTime = DateTime.parse(timestamp);
         if (reportTime.isBefore(startOfToday)) {
           return false;
         }
@@ -1109,7 +1250,7 @@ Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
       
       // Apply date filter if selected
       if (_selectedDate != null && timestamp != null) {
-        final reportDate = timestamp.toDate();
+        final reportDate = DateTime.parse(timestamp);
         if (!DateUtils.isSameDay(reportDate, _selectedDate)) {
           return false;
         }
@@ -1122,8 +1263,8 @@ Widget _buildRegularList(List<QueryDocumentSnapshot> filteredDocs) {
     }).toList();
   }
 
-  void _showEmergencyDetails(QueryDocumentSnapshot doc) {
-    final incident = IncidentData.fromDocument(doc);
+  void _showEmergencyDetails(Map<String, dynamic> doc) {
+    final incident = IncidentData.fromMap(doc, doc['id'].toString());
 
     if (kIsWeb) {
       showDialog(
@@ -1374,7 +1515,7 @@ class IncidentCard extends StatelessWidget {
                 ],
                 Text(
                   incident.timestamp != null
-                      ? DateFormat('MMM d, h:mm a').format(incident.timestamp!.toDate())
+                      ? DateFormat('MMM d, h:mm a').format(incident.timestamp!)
                       : 'Unknown time',
                   style: TextStyle(
                     fontSize: 12,
@@ -1496,7 +1637,7 @@ class IncidentCard extends StatelessWidget {
   }
 }
 
-// Incident Details Modal
+// Incident Details Modal - SINGLE VERSION
 class IncidentDetailsModal extends StatefulWidget {
   final IncidentData incident;
   final String userRole;
@@ -1520,43 +1661,44 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
   final TextEditingController _noteController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
   final Map<String, Uint8List?> _imageCache = {};
+  List<StatusUpdate> _statusUpdates = [];
+  bool _loadingStatusUpdates = false;
+  bool _updatingStatus = false;
 
   @override
   void initState() {
     super.initState();
     _selectedStatus = widget.incident.status;
-    _preloadImages();
+    _loadStatusUpdates();
   }
 
-  Future<void> _preloadImages() async {
-    for (final imageUrl in widget.incident.imageUrls) {
-      if (imageUrl is String && imageUrl.isNotEmpty) {
-        _loadImageForWeb(imageUrl);
-      }
-    }
-  }
+  Future<void> _loadStatusUpdates() async {
+    setState(() {
+      _loadingStatusUpdates = true;
+    });
 
-  Future<void> _loadImageForWeb(String imageUrl) async {
     try {
-      if (_imageCache.containsKey(imageUrl)) return;
-
-      final ref = FirebaseStorage.instance.refFromURL(imageUrl);
-      final imageData = await ref.getData();
-
+      final updates = await IncidentService.getStatusUpdates(widget.incident.id);
       setState(() {
-        _imageCache[imageUrl] = imageData;
+        _statusUpdates = updates;
       });
     } catch (e) {
-      if (kDebugMode) {
-        print('Error loading image: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to load status history: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
-      _imageCache[imageUrl] = null;
+    } finally {
+      setState(() {
+        _loadingStatusUpdates = false;
+      });
     }
   }
 
   void _showImagePreview(String imageUrl) {
-    final imageData = _imageCache[imageUrl];
-    
     showDialog(
       context: context,
       builder: (context) => Dialog(
@@ -1570,9 +1712,7 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
           child: Stack(
             children: [
               PhotoView(
-                imageProvider: imageData != null
-                    ? MemoryImage(imageData)
-                    : NetworkImage(imageUrl) as ImageProvider,
+                imageProvider: NetworkImage(imageUrl),
                 minScale: PhotoViewComputedScale.contained,
                 maxScale: PhotoViewComputedScale.covered * 2,
               ),
@@ -1786,7 +1926,7 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
           icon: Icons.access_time_rounded,
           title: 'Reported',
           content: widget.incident.timestamp != null
-              ? DateFormat('MMMM d, y - h:mm a').format(widget.incident.timestamp!.toDate())
+              ? DateFormat('MMMM d, y - h:mm a').format(widget.incident.timestamp!)
               : 'Unknown time',
         ),
         if (widget.incident.contactNumber != null)
@@ -1811,10 +1951,8 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
           const SizedBox(height: 24),
           _buildImagesSection(),
         ],
-        if (widget.incident.statusUpdates.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          _buildStatusTimeline(),
-        ],
+        const SizedBox(height: 24),
+        _buildStatusTimeline(),
       ],
     );
   }
@@ -1885,7 +2023,6 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
             itemCount: widget.incident.imageUrls.length,
             itemBuilder: (context, index) {
               final imageUrl = widget.incident.imageUrls[index]?.toString() ?? '';
-              final imageData = _imageCache[imageUrl];
 
               return Container(
                 margin: const EdgeInsets.only(right: 12),
@@ -1900,7 +2037,7 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
                         width: 120,
                         height: 120,
                         color: Colors.grey[200],
-                        child: _buildImageWidget(imageUrl, imageData),
+                        child: _buildImageWidget(imageUrl),
                       ),
                     ),
                   ),
@@ -1913,18 +2050,9 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
     );
   }
 
-  Widget _buildImageWidget(String imageUrl, Uint8List? imageData) {
-    if (imageData == null) {
-      return Container(
-        color: Colors.grey[300],
-        child: const Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-    }
-    
-    return Image.memory(
-      imageData,
+  Widget _buildImageWidget(String imageUrl) {
+    return Image.network(
+      imageUrl,
       fit: BoxFit.cover,
       errorBuilder: (context, error, stackTrace) {
         return Container(
@@ -1937,106 +2065,168 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
     );
   }
 
-  Widget _buildStatusTimeline() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'STATUS HISTORY',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w700,
-            color: IncidentReportConstants.colorScheme['primaryDark'],
+Widget _buildStatusTimeline() {
+  if (_loadingStatusUpdates) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24.0),
+        child: CircularProgressIndicator(),
+      ),
+    );
+  }
+
+  // Create a combined list that includes the initial pending status
+  final List<StatusUpdate> allStatusUpdates = [];
+  
+  // Add the initial pending status if it's not in the updates
+  final hasInitialPending = _statusUpdates.any((update) => update.status == 'pending');
+  if (!hasInitialPending && widget.incident.status == 'pending') {
+    allStatusUpdates.add(
+      StatusUpdate(
+        id: 'initial',
+        incidentId: widget.incident.id,
+        status: 'pending',
+        note: 'Incident reported',
+        updatedBy: widget.incident.name ?? 'Anonymous',
+        createdAt: widget.incident.timestamp ?? widget.incident.createdAt ?? DateTime.now(),
+      ),
+    );
+  }
+  
+  // Add all the actual status updates
+  allStatusUpdates.addAll(_statusUpdates);
+
+  if (allStatusUpdates.isEmpty) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        children: [
+          Icon(
+            Icons.history_rounded,
+            size: 48,
+            color: Colors.grey[400],
           ),
-        ),
-        const SizedBox(height: 16),
-        ...widget.incident.statusUpdates.reversed.map((update) {
-          final status = update['status']?.toString() ?? '';
-          final note = update['note']?.toString() ?? '';
-          final timestamp = update['timestamp'];
-          
-          DateTime? time;
-          if (timestamp is Timestamp) {
-            time = timestamp.toDate();
-          }
-          
-          final timeString = time != null 
-              ? DateFormat('MMM d, h:mm a').format(time)
-              : 'Unknown time';
-          
-          final statusStyle = StyleService.getStatusStyle(status);
-          
-          return Container(
-            margin: const EdgeInsets.only(bottom: 16),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.grey[50],
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey.shade200),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.05),
-                  blurRadius: 5,
-                  offset: const Offset(0, 2),
-                ),
-              ],
+          const SizedBox(height: 12),
+          Text(
+            'No Status History',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey[600],
             ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: statusStyle['bgColor'] as Color,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    statusStyle['icon'] as IconData,
-                    color: statusStyle['color'] as Color,
-                    size: 20,
-                  ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Status updates will appear here once they are added.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.grey[500],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        'STATUS HISTORY',
+        style: TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w700,
+          color: IncidentReportConstants.colorScheme['primaryDark'],
+        ),
+      ),
+      const SizedBox(height: 16),
+      ...allStatusUpdates.reversed.map((update) {
+        final statusStyle = StyleService.getStatusStyle(update.status);
+        
+        return Container(
+          margin: const EdgeInsets.only(bottom: 16),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.grey[50],
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey.shade200),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 5,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: statusStyle['bgColor'] as Color,
+                  shape: BoxShape.circle,
                 ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        status.toUpperCase(),
-                        style: TextStyle(
-                          color: statusStyle['color'] as Color,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 16,
-                        ),
+                child: Icon(
+                  statusStyle['icon'] as IconData,
+                  color: statusStyle['color'] as Color,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      update.status.toUpperCase(),
+                      style: TextStyle(
+                        color: statusStyle['color'] as Color,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 16,
                       ),
-                      if (note.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          note,
-                          style: const TextStyle(
-                            color: Colors.black87,
-                            fontSize: 14,
-                          ),
-                        ),
-                      ],
+                    ),
+                    if (update.note.isNotEmpty) ...[
                       const SizedBox(height: 8),
                       Text(
-                        timeString,
-                        style: TextStyle(
-                          color: Colors.grey[600],
-                          fontSize: 12,
+                        update.note,
+                        style: const TextStyle(
+                          color: Colors.black87,
+                          fontSize: 14,
                         ),
                       ),
                     ],
-                  ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'By: ${update.updatedBy}',
+                      style: TextStyle(
+                        color: Colors.grey[600],
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      DateFormat('MMM d, h:mm a').format(update.createdAt),
+                      style: TextStyle(
+                        color: Colors.grey[600],
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-          );
-        }),
-      ],
-    );
-  }
+              ),
+            ],
+          ),
+        );
+      }),
+    ],
+  );
+}
 
   Widget _buildStatusSection() {
     if (widget.userRole == 'admin') {
@@ -2048,17 +2238,16 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
 
 Widget _buildAdminStatusSection() {
   // Ensure _selectedStatus is valid and exists in status options
-  if (!IncidentReportConstants.statusOptions.contains(_selectedStatus)) {
+  final availableStatusOptions = IncidentReportConstants.statusOptions;
+  
+  // Validate and set default if current selection is invalid
+  if (!availableStatusOptions.contains(_selectedStatus)) {
     _selectedStatus = widget.incident.status;
+    // If incident status is also invalid, fall back to first option
+    if (!availableStatusOptions.contains(_selectedStatus)) {
+      _selectedStatus = availableStatusOptions.first;
+    }
   }
-
-  // Create dropdown items - remove the current status to avoid duplicates
-  final availableStatusOptions = IncidentReportConstants.statusOptions
-      .where((status) => status != widget.incident.status)
-      .toList();
-
-  // Add the current status at the beginning to show it as selected
-  availableStatusOptions.insert(0, widget.incident.status);
 
   final dropdownItems = <DropdownMenuItem<String>>[];
   for (final status in availableStatusOptions) {
@@ -2082,6 +2271,7 @@ Widget _buildAdminStatusSection() {
     decoration: BoxDecoration(
       color: Colors.grey[50],
       borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: Colors.grey.shade300),
     ),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2098,7 +2288,7 @@ Widget _buildAdminStatusSection() {
         DropdownButtonFormField<String>(
           value: _selectedStatus,
           items: dropdownItems,
-          onChanged: (String? newValue) {
+          onChanged: _updatingStatus ? null : (String? newValue) {
             if (newValue != null) {
               _handleStatusChange(newValue);
             }
@@ -2146,14 +2336,37 @@ Widget _buildAdminStatusSection() {
         const SizedBox(height: 16),
         SizedBox(
           width: double.infinity,
-          child: ElevatedButton(
-            onPressed: _updateStatus,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: IncidentReportConstants.colorScheme['primary'],
-              padding: const EdgeInsets.symmetric(vertical: 16),
-            ),
-            child: const Text('SAVE UPDATE', style: TextStyle(color: Colors.white)),
-          ),
+          child: _updatingStatus
+              ? ElevatedButton(
+                  onPressed: null,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: IncidentReportConstants.colorScheme['primary']!.withOpacity(0.6),
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      ),
+                      SizedBox(width: 12),
+                      Text('UPDATING...', style: TextStyle(color: Colors.white)),
+                    ],
+                  ),
+                )
+              : ElevatedButton(
+                  onPressed: _updateStatus,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: IncidentReportConstants.colorScheme['primary'],
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                  child: const Text('SAVE UPDATE', style: TextStyle(color: Colors.white)),
+                ),
         ),
       ],
     ),
@@ -2198,6 +2411,7 @@ Widget _buildAdminStatusSection() {
       decoration: BoxDecoration(
         color: Colors.grey[50],
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade300),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2222,12 +2436,14 @@ Widget _buildAdminStatusSection() {
               children: [
                 Icon(statusStyle['icon'] as IconData, color: statusStyle['color'] as Color, size: 32),
                 const SizedBox(width: 16),
-                Text(
-                  (statusStyle['label'] as String).toUpperCase(),
-                  style: TextStyle(
-                    color: statusStyle['color'] as Color,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 20,
+                Expanded(
+                  child: Text(
+                    (statusStyle['label'] as String).toUpperCase(),
+                    style: TextStyle(
+                      color: statusStyle['color'] as Color,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 20,
+                    ),
                   ),
                 ),
               ],
@@ -2242,6 +2458,10 @@ Widget _buildAdminStatusSection() {
     if (_formKey.currentState!.validate()) {
       final note = _noteController.text.trim();
       
+      setState(() {
+        _updatingStatus = true;
+      });
+      
       try {
         await IncidentService.updateIncidentStatus(
           widget.incident.id,
@@ -2250,26 +2470,51 @@ Widget _buildAdminStatusSection() {
           updatedBy: 'Admin',
         );
 
+        // Reload status updates to show the new one
+        await _loadStatusUpdates();
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Status updated successfully!'),
               backgroundColor: Colors.green,
+              duration: Duration(seconds: 2),
             ),
           );
+          
+          // Clear the note field
+          _noteController.clear();
+          
           widget.onStatusUpdated();
-          Navigator.pop(context);
         }
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Failed to update status: $e'),
+              content: Text('Failed to update status: ${e.toString()}'),
               backgroundColor: Colors.red,
+              duration: const Duration(seconds: 3),
             ),
           );
         }
+        
+        // Log the error for debugging
+        if (kDebugMode) {
+          print('Status update error: $e');
+        }
+      } finally {
+        if (mounted) {
+          setState(() {
+            _updatingStatus = false;
+          });
+        }
       }
     }
+  }
+
+  @override
+  void dispose() {
+    _noteController.dispose();
+    super.dispose();
   }
 }

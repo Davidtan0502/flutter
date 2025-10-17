@@ -1,30 +1,61 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:radar_dashboard/supabase_config.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class UserManagementService {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  static final SupabaseClient _adminClient = SupabaseClient(
+    SupabaseConfig.url,
+    SupabaseConfig.serviceRoleKey
+  );
 
-  // Delete user account with confirmation
   static Future<void> deleteUserAccount({
     required BuildContext context,
     required String userId,
     required String userEmail,
     required String collectionName,
-    required VoidCallback onSuccess,
+    VoidCallback? onSuccess,
   }) async {
-    final confirmed = await _showDeleteConfirmationDialog(
-      context,
-      userEmail,
-    );
+    final confirmed = await _showDeleteConfirmationDialog(context, userEmail);
+    
+    if (confirmed != true) return;
+    if (!context.mounted) return;
 
-    if (confirmed) {
-      await _performDeleteUser(
+    try {
+      // Show loading indicator
+      showDialog(
         context: context,
-        userId: userId,
-        collectionName: collectionName,
-        userEmail: userEmail,
-        onSuccess: onSuccess,
+        barrierDismissible: false,
+        builder: (BuildContext context) {
+          return const AlertDialog(
+            content: Row(
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(width: 16),
+                Text('Deleting user account...'),
+              ],
+            ),
+          );
+        },
       );
+
+      await _adminClient
+          .from(collectionName)
+          .delete()
+          .eq('id', userId);
+
+      // Close loading dialog
+      if (context.mounted) {
+        Navigator.of(context).pop();
+        _showSuccessSnackbar(context, userEmail);
+      }
+
+      onSuccess?.call();
+    } catch (e) {
+      // Close loading dialog
+      if (context.mounted) {
+        Navigator.of(context).pop();
+        _showErrorSnackbar(context, e.toString());
+      }
     }
   }
 
@@ -101,83 +132,6 @@ class UserManagementService {
     );
 
     return result ?? false;
-  }
-
-  // Perform the actual deletion
-  static Future<void> _performDeleteUser({
-    required BuildContext context,
-    required String userId,
-    required String collectionName,
-    required String userEmail,
-    required VoidCallback onSuccess,
-  }) async {
-    try {
-      // Show loading indicator
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (BuildContext context) {
-          return const AlertDialog(
-            content: Row(
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(width: 16),
-                Text('Deleting user account...'),
-              ],
-            ),
-          );
-        },
-      );
-
-      // Delete user document
-      await _firestore.collection(collectionName).doc(userId).delete();
-
-      // If it's a radar app user, also delete their incidents
-      if (collectionName == 'users') {
-        await _deleteUserIncidents(userId);
-      }
-
-      // Close loading dialog
-      if (context.mounted) {
-        Navigator.of(context).pop();
-      }
-
-      // Show success message
-      _showSuccessSnackbar(context, userEmail);
-
-      // Call success callback
-      onSuccess();
-    } catch (e) {
-      // Close loading dialog
-      if (context.mounted) {
-        Navigator.of(context).pop();
-      }
-
-      // Show error message
-      _showErrorSnackbar(context, e.toString());
-    }
-  }
-
-  // Delete user incidents (for radar app users)
-  static Future<void> _deleteUserIncidents(String userId) async {
-    try {
-      final incidentsSnapshot = await _firestore
-          .collection('incidents')
-          .where('userId', isEqualTo: userId)
-          .get();
-
-      final batch = _firestore.batch();
-      for (final doc in incidentsSnapshot.docs) {
-        batch.delete(doc.reference);
-      }
-
-      if (incidentsSnapshot.docs.isNotEmpty) {
-        await batch.commit();
-      }
-    } catch (e) {
-      // Log error but don't fail the main deletion
-      debugPrint('Error deleting user incidents: $e');
-    }
   }
 
   static void _showSuccessSnackbar(BuildContext context, String userEmail) {

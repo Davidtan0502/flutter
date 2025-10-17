@@ -1,19 +1,17 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:radar_dashboard/login/admin/admin_incident_report_screen.dart';
 import 'user_management_service.dart';
 
 class RadarAppUserCard extends StatefulWidget {
-  final QueryDocumentSnapshot user;
-  final Map<String, dynamic> data;
+  final Map<String, dynamic> userData;
   final String searchQuery;
   final VoidCallback? onUserDeleted;
 
   const RadarAppUserCard({
     super.key, 
-    required this.user, 
-    required this.data,
+    required this.userData,
     this.searchQuery = '',
     this.onUserDeleted,
   });
@@ -25,6 +23,7 @@ class RadarAppUserCard extends StatefulWidget {
 class _RadarAppUserCardState extends State<RadarAppUserCard> {
   int _incidentCount = 0;
   bool _loadingIncidents = false;
+  final SupabaseClient _supabase = Supabase.instance.client;
 
   @override
   void initState() {
@@ -35,12 +34,12 @@ class _RadarAppUserCardState extends State<RadarAppUserCard> {
   Future<void> _loadIncidentCount() async {
     setState(() => _loadingIncidents = true);
     try {
-      final incidentsSnapshot = await FirebaseFirestore.instance
-          .collection('incidents')
-          .where('userId', isEqualTo: widget.user.id)
-          .get();
+      final incidentsResponse = await _supabase
+          .from('incidents')
+          .select()
+          .eq('user_id', widget.userData['id']);
       
-      setState(() => _incidentCount = incidentsSnapshot.docs.length);
+      setState(() => _incidentCount = incidentsResponse.length);
     } catch (e) {
       debugPrint('Error loading incidents: $e');
     } finally {
@@ -51,9 +50,9 @@ class _RadarAppUserCardState extends State<RadarAppUserCard> {
   Future<void> _deleteUserAccount() async {
     await UserManagementService.deleteUserAccount(
       context: context,
-      userId: widget.user.id,
-      userEmail: widget.data['email'] ?? 'Unknown User',
-      collectionName: 'users',
+      userId: widget.userData['id'],
+      userEmail: widget.userData['email'] ?? 'Unknown User',
+      collectionName: 'app_users', // Changed from 'users' to 'app_users'
       onSuccess: () {
         widget.onUserDeleted?.call();
       },
@@ -70,29 +69,29 @@ class _RadarAppUserCardState extends State<RadarAppUserCard> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              _DetailRow(title: 'Email:', value: widget.data['email'] ?? 'N/A'),
-              _DetailRow(title: 'User ID:', value: widget.user.id),
-              _DetailRow(title: 'Role:', value: widget.data['role'] ?? 'user'),
+              _DetailRow(title: 'Email:', value: widget.userData['email'] ?? 'N/A'),
+              _DetailRow(title: 'User ID:', value: widget.userData['id'] ?? 'N/A'),
+              _DetailRow(title: 'Role:', value: widget.userData['role'] ?? 'user'),
               _DetailRow(
                 title: 'Created:', 
-                value: _formatTimestamp(widget.data['createdAt'] as Timestamp?)
+                value: _formatTimestamp(widget.userData['created_at'])
               ),
               _DetailRow(
                 title: 'Last Active:', 
-                value: _formatTimestamp(widget.data['lastActive'] as Timestamp?)
+                value: _formatTimestamp(widget.userData['last_active'])
               ),
               _DetailRow(
                 title: 'Status:', 
-                value: _getOnlineStatusText(widget.data['lastActive'] as Timestamp?)
+                value: _getOnlineStatusText(widget.userData['last_active'])
               ),
               _DetailRow(
                 title: 'Last Activity:', 
-                value: _getTimeSinceLastActivity(widget.data['lastActive'] as Timestamp?)
+                value: _getTimeSinceLastActivity(widget.userData['last_active'])
               ),
-              _DetailRow(title: 'Emergency Reports:', value: '${widget.data['emergencyReports'] ?? 0}'),
+              _DetailRow(title: 'Emergency Reports:', value: '${widget.userData['emergency_reports'] ?? 0}'),
               _DetailRow(title: 'Incidents Reported:', value: '$_incidentCount'),
-              if (widget.data['lastLocation'] != null) 
-                _DetailRow(title: 'Last Location:', value: '${widget.data['lastLocation']}'),
+              if (widget.userData['last_location'] != null) 
+                _DetailRow(title: 'Last Location:', value: '${widget.userData['last_location']}'),
             ],
           ),
         ),
@@ -123,10 +122,10 @@ class _RadarAppUserCardState extends State<RadarAppUserCard> {
       context,
       MaterialPageRoute(
         builder: (context) => AdminIncidentReportScreen(
-          userId: widget.user.id,
-          userEmail: widget.data['email'] ?? 'Unknown User',
-          userName: widget.data['name'] ?? 'Unknown Name',
-          userAddress: widget.data['address'] ?? 'No address provided',
+          userId: widget.userData['id'],
+          userEmail: widget.userData['email'] ?? 'Unknown User',
+          userName: widget.userData['name'] ?? 'Unknown Name',
+          userAddress: widget.userData['address'] ?? 'No address provided',
         ),
       ),
     );
@@ -135,44 +134,78 @@ class _RadarAppUserCardState extends State<RadarAppUserCard> {
   void _sendEmergencyAlert() {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Emergency alert sent to ${widget.data['email']}'),
+        content: Text('Emergency alert sent to ${widget.userData['email']}'),
         backgroundColor: Colors.orange,
       ),
     );
   }
 
-  String _formatTimestamp(Timestamp? timestamp) {
+  String _formatTimestamp(dynamic timestamp) {
     if (timestamp == null) return 'Never';
-    return DateFormat('MMM d, y - h:mm a').format(timestamp.toDate());
+    
+    // Handle both string and DateTime formats
+    if (timestamp is String) {
+      final dateTime = DateTime.tryParse(timestamp);
+      return dateTime != null ? DateFormat('MMM d, y - h:mm a').format(dateTime) : 'Invalid date';
+    } else if (timestamp is DateTime) {
+      return DateFormat('MMM d, y - h:mm a').format(timestamp);
+    }
+    
+    return 'Never';
   }
 
   // Enhanced online/offline detection with configurable threshold
-  bool _isUserOnline(Timestamp? lastActive) {
+  bool _isUserOnline(dynamic lastActive) {
     if (lastActive == null) return false;
+    
+    DateTime lastActiveTime;
+    
+    // Handle different timestamp formats
+    if (lastActive is String) {
+      final parsed = DateTime.tryParse(lastActive);
+      if (parsed == null) return false;
+      lastActiveTime = parsed;
+    } else if (lastActive is DateTime) {
+      lastActiveTime = lastActive;
+    } else {
+      return false;
+    }
     
     // Configurable time threshold (5 minutes for more accuracy)
     final timeThreshold = const Duration(minutes: 5);
     final thresholdTime = DateTime.now().subtract(timeThreshold);
     
-    return lastActive.toDate().isAfter(thresholdTime);
+    return lastActiveTime.isAfter(thresholdTime);
   }
 
   // Get online status text
-  String _getOnlineStatusText(Timestamp? lastActive) {
+  String _getOnlineStatusText(dynamic lastActive) {
     return _isUserOnline(lastActive) ? 'Online' : 'Offline';
   }
 
   // Get online status color
-  Color _getOnlineStatusColor(Timestamp? lastActive) {
+  Color _getOnlineStatusColor(dynamic lastActive) {
     return _isUserOnline(lastActive) ? Colors.green : Colors.grey;
   }
 
   // Get time since last activity
-  String _getTimeSinceLastActivity(Timestamp? lastActive) {
+  String _getTimeSinceLastActivity(dynamic lastActive) {
     if (lastActive == null) return 'Never active';
     
+    DateTime lastActivity;
+    
+    // Handle different timestamp formats
+    if (lastActive is String) {
+      final parsed = DateTime.tryParse(lastActive);
+      if (parsed == null) return 'Never active';
+      lastActivity = parsed;
+    } else if (lastActive is DateTime) {
+      lastActivity = lastActive;
+    } else {
+      return 'Never active';
+    }
+    
     final now = DateTime.now();
-    final lastActivity = lastActive.toDate();
     final difference = now.difference(lastActivity);
 
     if (difference.inMinutes < 1) {
@@ -223,12 +256,12 @@ class _RadarAppUserCardState extends State<RadarAppUserCard> {
   }
 
   _RadarUserData _getUserData() {
-    final email = widget.data['email'] ?? 'No email';
-    final name = widget.data['name'] ?? 'No name';
-    final role = widget.data['role'] ?? 'user';
-    final createdAt = widget.data['createdAt'] as Timestamp?;
-    final lastActive = widget.data['lastActive'] as Timestamp?;
-    final emergencyReports = widget.data['emergencyReports'] ?? 0;
+    final email = widget.userData['email'] ?? 'No email';
+    final name = widget.userData['name'] ?? 'No name';
+    final role = widget.userData['role'] ?? 'user';
+    final createdAt = widget.userData['created_at'];
+    final lastActive = widget.userData['last_active'];
+    final emergencyReports = widget.userData['emergency_reports'] ?? 0;
     final isOnline = _isUserOnline(lastActive);
     final onlineStatusColor = _getOnlineStatusColor(lastActive);
     final onlineStatusText = _getOnlineStatusText(lastActive);
@@ -253,8 +286,8 @@ class _RadarUserData {
   final String email;
   final String name;
   final String role;
-  final Timestamp? createdAt;
-  final Timestamp? lastActive;
+  final dynamic createdAt;
+  final dynamic lastActive;
   final int emergencyReports;
   final bool isOnline;
   final Color onlineStatusColor;
@@ -308,8 +341,8 @@ class _DetailRow extends StatelessWidget {
 class UserCardTemplate extends StatelessWidget {
   final String email;
   final String role;
-  final Timestamp? createdAt;
-  final Timestamp? lastLogin;
+  final dynamic createdAt;
+  final dynamic lastLogin;
   final String? additionalInfo;
   final bool isUpdating;
   final Function(String?)? onRoleChanged;
@@ -335,17 +368,38 @@ class UserCardTemplate extends StatelessWidget {
     this.department,
   });
 
-  String _formatTimestamp(Timestamp? timestamp) {
+  String _formatTimestamp(dynamic timestamp) {
     if (timestamp == null) return 'Never';
-    return DateFormat('MMM d, y - h:mm a').format(timestamp.toDate());
+    
+    // Handle both string and DateTime formats
+    if (timestamp is String) {
+      final dateTime = DateTime.tryParse(timestamp);
+      return dateTime != null ? DateFormat('MMM d, y - h:mm a').format(dateTime) : 'Invalid date';
+    } else if (timestamp is DateTime) {
+      return DateFormat('MMM d, y - h:mm a').format(timestamp);
+    }
+    
+    return 'Never';
   }
 
   // Get time since last activity for radar users
-  String _getTimeSinceLastActivity(Timestamp? lastLogin) {
+  String _getTimeSinceLastActivity(dynamic lastLogin) {
     if (lastLogin == null) return 'Never active';
     
+    DateTime lastActivity;
+    
+    // Handle different timestamp formats
+    if (lastLogin is String) {
+      final parsed = DateTime.tryParse(lastLogin);
+      if (parsed == null) return 'Never active';
+      lastActivity = parsed;
+    } else if (lastLogin is DateTime) {
+      lastActivity = lastLogin;
+    } else {
+      return 'Never active';
+    }
+    
     final now = DateTime.now();
-    final lastActivity = lastLogin.toDate();
     final difference = now.difference(lastActivity);
 
     if (difference.inMinutes < 1) {
@@ -404,7 +458,7 @@ class UserCardTemplate extends StatelessWidget {
             boxShadow: [
               if (statusIndicator == Colors.green)
                 BoxShadow(
-                  color: statusIndicator!.withOpacity(0.5),
+                  color: statusIndicator!.withAlpha(128), // Fixed deprecated withOpacity
                   blurRadius: 4,
                   spreadRadius: 2,
                 ),
@@ -421,7 +475,7 @@ class UserCardTemplate extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: isAdmin ? Colors.blue[50] : Colors.green[50],
+        color: isAdmin ? Colors.blue.withAlpha(51) : Colors.green.withAlpha(51), // Fixed deprecated withOpacity
         shape: BoxShape.circle,
       ),
       child: Icon(
@@ -461,7 +515,7 @@ class UserCardTemplate extends StatelessWidget {
         name!,
         style: TextStyle(
           fontSize: 14,
-          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+          color: Theme.of(context).colorScheme.onSurface.withAlpha(179), // Fixed deprecated withOpacity
         ),
       ),
     ];
@@ -563,7 +617,7 @@ class UserCardTemplate extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: isAdmin ? Colors.blue[50] : Colors.grey[100],
+        color: isAdmin ? Colors.blue.withAlpha(51) : Colors.grey.withAlpha(25), // Fixed deprecated withOpacity
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: isAdmin ? Colors.blue[200]! : Colors.grey[300]!,

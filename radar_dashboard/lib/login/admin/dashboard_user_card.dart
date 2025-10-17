@@ -1,18 +1,17 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:radar_dashboard/login/admin/security%20roles/admin_management_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 import 'user_management_service.dart';
 
 class DashboardUserCard extends StatefulWidget {
-  final QueryDocumentSnapshot user;
-  final Map<String, dynamic> data;
+  final Map<String, dynamic> userData;
   final bool isMobile;
   final VoidCallback? onUserDeleted;
 
   const DashboardUserCard({
     super.key, 
-    required this.user, 
-    required this.data,
+    required this.userData,
     this.isMobile = false,
     this.onUserDeleted,
   });
@@ -25,17 +24,26 @@ class _DashboardUserCardState extends State<DashboardUserCard> {
   bool _updating = false;
 
   Future<void> _updateUserRole(String? newRole) async {
-    if (newRole == null || newRole == widget.data['role']) return;
+    if (newRole == null || newRole == widget.userData['role']) return;
 
     setState(() => _updating = true);
     
     try {
-      await FirebaseFirestore.instance
-          .collection('dashboard_users')
-          .doc(widget.user.id)
-          .update({'role': newRole});
+      // Use the secure admin service for role changes
+      bool success;
+      if (newRole == 'admin') {
+        success = await AdminManagementService.promoteToAdmin(widget.userData['id']);
+      } else {
+        success = await AdminManagementService.demoteToUser(widget.userData['id']);
+      }
 
-      _showSuccessSnackbar('User role updated to $newRole');
+      if (success) {
+        _showSuccessSnackbar('User role updated to $newRole');
+        // Refresh the user data
+        widget.onUserDeleted?.call(); // This will trigger a refresh
+      } else {
+        _showErrorSnackbar('Failed to update role. Please try again.');
+      }
     } catch (e) {
       _showErrorSnackbar('Failed to update role: $e');
     } finally {
@@ -64,8 +72,8 @@ class _DashboardUserCardState extends State<DashboardUserCard> {
   Future<void> _deleteUserAccount() async {
     await UserManagementService.deleteUserAccount(
       context: context,
-      userId: widget.user.id,
-      userEmail: widget.data['email'] ?? 'Unknown User',
+      userId: widget.userData['id'],
+      userEmail: widget.userData['email'] ?? 'Unknown User',
       collectionName: 'dashboard_users',
       onSuccess: () {
         widget.onUserDeleted?.call();
@@ -83,25 +91,25 @@ class _DashboardUserCardState extends State<DashboardUserCard> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              _DetailRow(title: 'Email:', value: widget.data['email'] ?? 'N/A'),
-              _DetailRow(title: 'User ID:', value: widget.user.id),
-              _DetailRow(title: 'Role:', value: widget.data['role'] ?? 'user'),
+              _DetailRow(title: 'Email:', value: widget.userData['email'] ?? 'N/A'),
+              _DetailRow(title: 'User ID:', value: widget.userData['id'] ?? 'N/A'),
+              _DetailRow(title: 'Role:', value: widget.userData['role'] ?? 'user'),
               _DetailRow(
                 title: 'Created:', 
-                value: _formatTimestamp(widget.data['createdAt'] as Timestamp?)
+                value: _formatTimestamp(widget.userData['created_at'])
               ),
               _DetailRow(
                 title: 'Last Login:', 
-                value: _formatTimestamp(widget.data['lastLogin'] as Timestamp?)
+                value: _formatTimestamp(widget.userData['last_login'])
               ),
               _DetailRow(
                 title: 'Status:', 
-                value: _getOnlineStatusText(widget.data['lastLogin'] as Timestamp?)
+                value: _getOnlineStatusText(widget.userData['last_login'])
               ),
-              if (widget.data['name'] != null) 
-                _DetailRow(title: 'Name:', value: widget.data['name']),
-              if (widget.data['department'] != null) 
-                _DetailRow(title: 'Department:', value: widget.data['department']),
+              if (widget.userData['name'] != null) 
+                _DetailRow(title: 'Name:', value: widget.userData['name']),
+              if (widget.userData['department'] != null) 
+                _DetailRow(title: 'Department:', value: widget.userData['department']),
             ],
           ),
         ),
@@ -122,38 +130,72 @@ class _DashboardUserCardState extends State<DashboardUserCard> {
     );
   }
 
-  String _formatTimestamp(Timestamp? timestamp) {
+  String _formatTimestamp(dynamic timestamp) {
     if (timestamp == null) return 'Never';
-    return DateFormat('MMM d, y - h:mm a').format(timestamp.toDate());
+    
+    // Handle both string and DateTime formats
+    if (timestamp is String) {
+      final dateTime = DateTime.tryParse(timestamp);
+      return dateTime != null ? DateFormat('MMM d, y - h:mm a').format(dateTime) : 'Invalid date';
+    } else if (timestamp is DateTime) {
+      return DateFormat('MMM d, y - h:mm a').format(timestamp);
+    }
+    
+    return 'Never';
   }
 
   // Enhanced online/offline detection with configurable threshold
-  bool _isUserOnline(Timestamp? lastLogin) {
+  bool _isUserOnline(dynamic lastLogin) {
     if (lastLogin == null) return false;
+    
+    DateTime lastLoginTime;
+    
+    // Handle different timestamp formats
+    if (lastLogin is String) {
+      final parsed = DateTime.tryParse(lastLogin);
+      if (parsed == null) return false;
+      lastLoginTime = parsed;
+    } else if (lastLogin is DateTime) {
+      lastLoginTime = lastLogin;
+    } else {
+      return false;
+    }
     
     // Configurable time threshold (5 minutes for more accuracy)
     final timeThreshold = const Duration(minutes: 5);
     final thresholdTime = DateTime.now().subtract(timeThreshold);
     
-    return lastLogin.toDate().isAfter(thresholdTime);
+    return lastLoginTime.isAfter(thresholdTime);
   }
 
   // Get online status text
-  String _getOnlineStatusText(Timestamp? lastLogin) {
+  String _getOnlineStatusText(dynamic lastLogin) {
     return _isUserOnline(lastLogin) ? 'Online' : 'Offline';
   }
 
   // Get online status color
-  Color _getOnlineStatusColor(Timestamp? lastLogin) {
+  Color _getOnlineStatusColor(dynamic lastLogin) {
     return _isUserOnline(lastLogin) ? Colors.green : Colors.grey;
   }
 
   // Get time since last activity
-  String _getTimeSinceLastActivity(Timestamp? lastLogin) {
+  String _getTimeSinceLastActivity(dynamic lastLogin) {
     if (lastLogin == null) return 'Never active';
     
+    DateTime lastActivity;
+    
+    // Handle different timestamp formats
+    if (lastLogin is String) {
+      final parsed = DateTime.tryParse(lastLogin);
+      if (parsed == null) return 'Never active';
+      lastActivity = parsed;
+    } else if (lastLogin is DateTime) {
+      lastActivity = lastLogin;
+    } else {
+      return 'Never active';
+    }
+    
     final now = DateTime.now();
-    final lastActivity = lastLogin.toDate();
     final difference = now.difference(lastActivity);
 
     if (difference.inMinutes < 1) {
@@ -219,12 +261,12 @@ class _DashboardUserCardState extends State<DashboardUserCard> {
   }
 
   _UserData _getUserData() {
-    final email = widget.data['email'] ?? 'No email';
-    final role = widget.data['role'] ?? 'user';
-    final createdAt = widget.data['createdAt'] as Timestamp?;
-    final lastLogin = widget.data['lastLogin'] as Timestamp?;
-    final name = widget.data['name'] ?? '';
-    final department = widget.data['department'] ?? '';
+    final email = widget.userData['email'] ?? 'No email';
+    final role = widget.userData['role'] ?? 'user';
+    final createdAt = widget.userData['created_at'];
+    final lastLogin = widget.userData['last_login'];
+    final name = widget.userData['name'] ?? '';
+    final department = widget.userData['department'] ?? '';
     final isOnline = _isUserOnline(lastLogin);
     final onlineStatusColor = _getOnlineStatusColor(lastLogin);
     final onlineStatusText = _getOnlineStatusText(lastLogin);
@@ -350,7 +392,7 @@ class _DashboardUserCardState extends State<DashboardUserCard> {
             ),
           ],
           if (!isMobile && userData.department.isNotEmpty) ...[
-            SizedBox(height: 2),
+            const SizedBox(height: 2),
             Text(
               userData.department,
               style: TextStyle(
@@ -565,8 +607,8 @@ class _DashboardUserCardState extends State<DashboardUserCard> {
 class _UserData {
   final String email;
   final String role;
-  final Timestamp? createdAt;
-  final Timestamp? lastLogin;
+  final dynamic createdAt;
+  final dynamic lastLogin;
   final String name;
   final String department;
   final bool isOnline;
