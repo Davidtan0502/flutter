@@ -8,8 +8,15 @@ import 'dart:async';
 
 class MapMonitoring extends StatefulWidget {
   final DateTimeRange? dateRange;
+  final ValueChanged<DateTimeRange?> onDateRangeChanged;
+  final List<Map<String, dynamic>> incidents;
 
-  const MapMonitoring({super.key, this.dateRange});
+  const MapMonitoring({
+    super.key, 
+    this.dateRange,
+    required this.onDateRangeChanged,
+    required this.incidents,
+  });
 
   @override
   State<MapMonitoring> createState() => _MapMonitoringState();
@@ -19,19 +26,23 @@ class _MapMonitoringState extends State<MapMonitoring> {
   // Constants
   static const LatLng _initialPosition = LatLng(14.5995, 120.9842);
   static const double _initialZoom = 13.0;
-  static const double _mapHeight = 660.5;
+  static const double _mapHeight = 600.5;
 
   // State
-  final List<Marker> _markers = [];
+  final Map<String, Marker> _markersMap = {};
   final Map<String, LatLng> _geocodingCache = {};
   final Map<String, Color> _iconColorCache = {};
   MapController? _mapController;
-  StreamSubscription? _incidentsSub;
 
   Map<String, dynamic>? _selectedIncident;
   bool _isLoading = true;
   bool _hasError = false;
   String _errorMessage = '';
+
+  // Real-time data management
+  final Map<String, Map<String, dynamic>> _incidentsMap = {};
+  StreamSubscription? _incidentsSubscription;
+  StreamSubscription? _statusUpdatesSubscription;
 
   // Debounce
   DateTime _lastGeocodeTime = DateTime.now();
@@ -42,16 +53,150 @@ class _MapMonitoringState extends State<MapMonitoring> {
     super.initState();
     _mapController = MapController();
     _preloadColors();
-    _loadIncidents();
+    _initializeData();
+    _setupRealTimeSubscriptions();
+  }
+
+  void _initializeData() {
+    // Start with the incidents provided by parent
+    for (final incident in widget.incidents) {
+      final id = incident['id'].toString();
+      _incidentsMap[id] = incident;
+    }
+    _processIncidents();
+  }
+
+  void _setupRealTimeSubscriptions() {
+    _setupIncidentsSubscription();
+    _setupStatusUpdatesSubscription();
+  }
+
+  void _setupIncidentsSubscription() {
+    _incidentsSubscription?.cancel();
+    
+    _incidentsSubscription = Supabase.instance.client
+        .from('incidents')
+        .stream(primaryKey: ['id'])
+        .order('timestamp', ascending: false)
+        .handleError((error) {
+      debugPrint('❌ MapMonitoring incidents stream error: $error');
+      Future.delayed(const Duration(seconds: 5), () {
+        if (mounted) _setupIncidentsSubscription();
+      });
+    }).listen(_handleIncidentsUpdate);
+
+    debugPrint('🎯 MapMonitoring real-time listener started');
+  }
+
+  void _setupStatusUpdatesSubscription() {
+    _statusUpdatesSubscription?.cancel();
+    
+    _statusUpdatesSubscription = Supabase.instance.client
+        .from('incident_status_updates')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: false)
+        .handleError((error) {
+      debugPrint('❌ MapMonitoring status updates stream error: $error');
+      Future.delayed(const Duration(seconds: 5), () {
+        if (mounted) _setupStatusUpdatesSubscription();
+      });
+    }).listen(_handleStatusUpdates);
+  }
+
+  void _handleIncidentsUpdate(List<Map<String, dynamic>> incidents) {
+    debugPrint('🔄 MapMonitoring received ${incidents.length} incidents from stream');
+    
+    bool hasChanges = false;
+    
+    for (final incident in incidents) {
+      final id = incident['id'].toString();
+      final eventType = incident['type'] as String?;
+      final newData = incident['new'] as Map<String, dynamic>?;
+      final oldData = incident['old'] as Map<String, dynamic>?;
+
+      switch (eventType) {
+        case 'INSERT':
+          if (newData != null) {
+            _incidentsMap[id] = newData;
+            hasChanges = true;
+            debugPrint('➕ MapMonitoring: NEW incident - $id');
+          }
+          break;
+        case 'UPDATE':
+          if (newData != null) {
+            _incidentsMap[id] = {
+              ..._incidentsMap[id] ?? {},
+              ...newData,
+            };
+            hasChanges = true;
+            debugPrint('✏️ MapMonitoring: UPDATED incident - $id');
+          }
+          break;
+        case 'DELETE':
+          if (oldData != null) {
+            _incidentsMap.remove(id);
+            hasChanges = true;
+            debugPrint('🗑️ MapMonitoring: DELETED incident - $id');
+          }
+          break;
+        default:
+          // Initial data or full refresh
+          _incidentsMap[id] = incident;
+          hasChanges = true;
+      }
+    }
+
+    if (hasChanges && mounted) {
+      _processIncidents();
+      debugPrint('📊 MapMonitoring total incidents in map: ${_incidentsMap.length}');
+    }
+  }
+
+  void _handleStatusUpdates(List<Map<String, dynamic>> statusUpdates) {
+    debugPrint('🔄 MapMonitoring received ${statusUpdates.length} status updates from stream');
+    
+    bool hasChanges = false;
+    
+    for (final update in statusUpdates) {
+      final eventType = update['type'] as String?;
+      final newData = update['new'] as Map<String, dynamic>?;
+      
+      if (eventType == 'INSERT' && newData != null) {
+        final incidentId = newData['incident_id'].toString();
+        final status = newData['status'].toString();
+        
+        if (_incidentsMap.containsKey(incidentId)) {
+          // Update the incident with latest status
+          _incidentsMap[incidentId] = {
+            ..._incidentsMap[incidentId]!,
+            'latest_status': status,
+          };
+          hasChanges = true;
+          debugPrint('🔄 MapMonitoring status updated for incident $incidentId: $status');
+        }
+      }
+    }
+    
+    if (hasChanges && mounted) {
+      _processIncidents();
+    }
   }
 
   @override
   void didUpdateWidget(MapMonitoring oldWidget) {
     super.didUpdateWidget(oldWidget);
-    
-    // Check if the dateRange has changed
-    if (widget.dateRange != oldWidget.dateRange) {
-      _loadIncidents();
+    if (oldWidget.incidents != widget.incidents || oldWidget.dateRange != widget.dateRange) {
+      debugPrint('📥 MapMonitoring: Parent data updated - ${widget.incidents.length} incidents');
+      
+      // Merge parent data with our real-time updates
+      for (final incident in widget.incidents) {
+        final id = incident['id'].toString();
+        if (!_incidentsMap.containsKey(id)) {
+          _incidentsMap[id] = incident;
+        }
+      }
+      
+      _processIncidents();
     }
   }
 
@@ -61,103 +206,79 @@ class _MapMonitoringState extends State<MapMonitoring> {
     }
   }
 
-  Future<void> _loadIncidents() async {
-    setState(() {
-      _isLoading = true;
-      _hasError = false;
-    });
-
-    try {
-      final supabase = Supabase.instance.client;
-      
-      // Get all incidents first
-      final response = await supabase
-          .from('incidents')
-          .select('*')
-          .order('timestamp', ascending: false);
-
-      List<Map<String, dynamic>> allIncidents = List<Map<String, dynamic>>.from(response);
-      
-      // Apply date filtering locally
-      final filteredIncidents = _filterIncidentsByDate(allIncidents);
-      await _processIncidents(filteredIncidents);
-      
-    } catch (error) {
-      if (mounted) {
-        setState(() {
-          _hasError = true;
-          _errorMessage = 'Error loading incidents: $error';
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
-  List<Map<String, dynamic>> _filterIncidentsByDate(List<Map<String, dynamic>> incidents) {
-    final now = DateTime.now();
-    DateTime start, end;
-
-    if (widget.dateRange != null) {
-      start = DateTime(
-        widget.dateRange!.start.year,
-        widget.dateRange!.start.month,
-        widget.dateRange!.start.day,
-        0, 0, 0,
-      );
-      end = DateTime(
-        widget.dateRange!.end.year,
-        widget.dateRange!.end.month,
-        widget.dateRange!.end.day,
-        23, 59, 59, 999,
-      );
-    } else {
-      start = DateTime(now.year, now.month, now.day, 0, 0, 0);
-      end = now;
-    }
-
-    return incidents.where((incident) {
-      final timestamp = incident['timestamp'];
-      if (timestamp == null) return false;
-      
-      try {
-        final incidentDate = DateTime.parse(timestamp);
-        return incidentDate.isAfter(start) && incidentDate.isBefore(end);
-      } catch (e) {
-        return false;
-      }
-    }).toList();
-  }
-
-  Future<void> _processIncidents(List<Map<String, dynamic>> incidents) async {
+  Future<void> _processIncidents() async {
     if (!mounted) return;
     
-    final newMarkers = <Marker>[];
+    setState(() {
+      _isLoading = true;
+    });
+
+    final newMarkersMap = <String, Marker>{};
     final processed = <String>{};
 
-    for (final incident in incidents) {
+    // Convert map to list for processing
+    final incidentsList = _incidentsMap.values.toList();
+
+    for (final incident in incidentsList) {
       final id = incident['id'].toString();
       if (processed.contains(id)) continue;
       processed.add(id);
-      
-      // Filter out resolved and declined incidents
-      final status = (incident['status'] ?? '').toString().toLowerCase();
-      if (status == 'resolved' || status == 'declined') {
-        continue;
+
+      // Apply date filtering based on widget.dateRange
+      final timestamp = incident['timestamp'];
+      if (timestamp == null) continue;
+
+      try {
+        final incidentDate = DateTime.parse(timestamp);
+        final now = DateTime.now();
+        DateTime start, end;
+
+        if (widget.dateRange != null) {
+          // Use selected date range - show ALL incidents including resolved
+          start = DateTime(
+            widget.dateRange!.start.year,
+            widget.dateRange!.start.month,
+            widget.dateRange!.start.day,
+          );
+          end = DateTime(
+            widget.dateRange!.end.year,
+            widget.dateRange!.end.month,
+            widget.dateRange!.end.day,
+            23, 59, 59, 999,
+          );
+        } else {
+          // Default to today - filter out resolved and declined incidents
+          start = DateTime(now.year, now.month, now.day);
+          end = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
+          
+          // For today view: filter out resolved and declined incidents
+          final status = (incident['latest_status'] ?? incident['status'] ?? '').toString().toLowerCase();
+          if (status == 'resolved' || status == 'declined') {
+            continue;
+          }
+        }
+
+        if (!incidentDate.isAfter(start.subtract(const Duration(seconds: 1))) || 
+            !incidentDate.isBefore(end.add(const Duration(seconds: 1)))) {
+          continue;
+        }
+      } catch (e) {
+        continue; // Skip if timestamp parsing fails
       }
 
       final pos = await _getIncidentPosition(incident);
       if (pos != null) {
         final marker = _createMarker(id, incident, pos);
-        newMarkers.add(marker);
+        newMarkersMap[id] = marker;
       }
     }
 
     if (mounted) {
       setState(() {
-        _markers
-          ..clear()
-          ..addAll(newMarkers);
+        _markersMap.clear();
+        _markersMap.addAll(newMarkersMap);
         _isLoading = false;
+        _hasError = false;
       });
     }
   }
@@ -211,7 +332,8 @@ class _MapMonitoringState extends State<MapMonitoring> {
 
   Marker _createMarker(String id, Map<String, dynamic> data, LatLng pos) {
     final type = (data['incident_type'] ?? 'other').toString().toLowerCase();
-    final markerColor = _iconColorCache[type] ?? _getDisasterColor(type);
+    final status = (data['latest_status'] ?? data['status'] ?? 'pending').toString().toLowerCase();
+    final markerColor = _getMarkerColor(type, status);
 
     return Marker(
       point: pos,
@@ -223,7 +345,7 @@ class _MapMonitoringState extends State<MapMonitoring> {
             _selectedIncident = {
               'id': id,
               'type': type,
-              'status': data['status'] ?? 'pending',
+              'status': status,
               'address': data['address'] ?? 'Unknown',
               'description': data['description'] ?? '',
               'timestamp': data['timestamp'],
@@ -252,6 +374,20 @@ class _MapMonitoringState extends State<MapMonitoring> {
         return Colors.green;
       default:
         return Colors.grey;
+    }
+  }
+
+  Color _getMarkerColor(String type, String status) {
+    final baseColor = _getDisasterColor(type);
+    
+    // Adjust color based on status
+    switch (status) {
+      case 'resolved':
+        return baseColor.withOpacity(0.5); // Semi-transparent for resolved incidents
+      case 'declined':
+        return Colors.grey; // Grey for declined incidents
+      default:
+        return baseColor; // Full color for active incidents
     }
   }
 
@@ -287,7 +423,7 @@ class _MapMonitoringState extends State<MapMonitoring> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: color.withAlpha(38), // Fixed: replaced withOpacity with withAlpha
+        color: color.withAlpha(38),
         border: Border.all(color: color),
         borderRadius: BorderRadius.circular(12),
       ),
@@ -338,7 +474,7 @@ class _MapMonitoringState extends State<MapMonitoring> {
               Row(
                 children: [
                   Icon(Icons.warning_amber_rounded,
-                      color: _getDisasterColor(incident['type']), size: 24),
+                      color: _getMarkerColor(incident['type'], incident['status']), size: 24),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -385,20 +521,22 @@ class _MapMonitoringState extends State<MapMonitoring> {
       child: Container(
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
-          color: Colors.white.withAlpha(242), // Fixed: replaced withOpacity with withAlpha
+          color: Colors.white.withAlpha(242),
           borderRadius: BorderRadius.circular(12),
           boxShadow: [
-            BoxShadow(color: Colors.black.withAlpha(51), blurRadius: 6, offset: const Offset(0, 2)), // Fixed
+            BoxShadow(color: Colors.black.withAlpha(51), blurRadius: 6, offset: const Offset(0, 2)),
           ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            _LegendItem(color: Colors.red, label: 'Fire'),
-            _LegendItem(color: Colors.blue, label: 'Flood'),
-            _LegendItem(color: Colors.orange, label: 'Accident'),
-            _LegendItem(color: Colors.green, label: 'Typhoon'),
-            _LegendItem(color: Colors.grey, label: 'Other'),
+          children: [
+            const _LegendItem(color: Colors.red, label: 'Fire'),
+            const _LegendItem(color: Colors.blue, label: 'Flood'),
+            const _LegendItem(color: Colors.orange, label: 'Accident'),
+            const _LegendItem(color: Colors.green, label: 'Typhoon'),
+            const _LegendItem(color: Colors.grey, label: 'Other'),
+            const SizedBox(height: 4),
+            _LegendItem(color: Colors.grey.withOpacity(0.5), label: 'Resolved (50% opacity)'),
           ],
         ),
       ),
@@ -433,18 +571,18 @@ class _MapMonitoringState extends State<MapMonitoring> {
                   onPressed: () {
                     setState(() {
                       _selectedIncident = null;
-                      _markers.clear();
                       _isLoading = true;
-                      _hasError = false;
                     });
-                    _loadIncidents();
+                    _processIncidents();
                     _mapController?.move(_initialPosition, _initialZoom);
                   },
                 ),
               ],
             ),
           ),
-          const Divider(height: 1),
+          
+          // No date filter section - completely removed
+          
           SizedBox(
             height: _mapHeight,
             child: Stack(
@@ -454,14 +592,14 @@ class _MapMonitoringState extends State<MapMonitoring> {
                   options: MapOptions(
                     initialCenter: _initialPosition,
                     initialZoom: _initialZoom,
-                    onTap: (_, __) => setState(() => _selectedIncident = null), // Fixed: single underscore
+                    onTap: (_, __) => setState(() => _selectedIncident = null),
                   ),
                   children: [
                     TileLayer(
                       urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.example.app',
                     ),
-                    MarkerLayer(markers: _markers),
+                    MarkerLayer(markers: _markersMap.values.toList()),
                   ],
                 ),
                 if (_selectedIncident != null) _buildIncidentDetails(),
@@ -484,7 +622,8 @@ class _MapMonitoringState extends State<MapMonitoring> {
   @override
   void dispose() {
     _mapController?.dispose();
-    _incidentsSub?.cancel();
+    _incidentsSubscription?.cancel();
+    _statusUpdatesSubscription?.cancel();
     super.dispose();
   }
 }

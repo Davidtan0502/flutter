@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -39,6 +40,7 @@ class IncidentData {
   final String id;
   final String? incidentType;
   final String? address;
+  final String? landmark;
   final String? name;
   final String? contactNumber;
   final String? description;
@@ -47,11 +49,14 @@ class IncidentData {
   final List<dynamic> imageUrls;
   final DateTime? createdAt;
   final DateTime? updatedAt;
+  final String? latestStatus; // For real-time status updates
+  final DateTime? statusUpdatedAt; // For real-time status updates
 
   IncidentData({
     required this.id,
     required this.incidentType,
     required this.address,
+    required this.landmark,
     required this.name,
     required this.contactNumber,
     required this.description,
@@ -60,6 +65,8 @@ class IncidentData {
     required this.imageUrls,
     this.createdAt,
     this.updatedAt,
+    this.latestStatus,
+    this.statusUpdatedAt,
   });
 
   factory IncidentData.fromMap(Map<String, dynamic> data, String id) {
@@ -67,10 +74,11 @@ class IncidentData {
       id: id,
       incidentType: data['incident_type']?.toString(),
       address: data['address']?.toString(),
+      landmark: data['landmark']?.toString(),
       name: data['name']?.toString(),
       contactNumber: data['contact_number']?.toString(),
       description: data['description']?.toString(),
-      status: (data['status'] ?? 'pending').toString(),
+      status: (data['latest_status'] ?? data['status'] ?? 'pending').toString(),
       timestamp: data['timestamp'] != null 
           ? DateTime.parse(data['timestamp'])
           : null,
@@ -81,8 +89,15 @@ class IncidentData {
       updatedAt: data['updated_at'] != null 
           ? DateTime.parse(data['updated_at'])
           : null,
+      latestStatus: data['latest_status']?.toString(),
+      statusUpdatedAt: data['status_updated_at'] != null 
+          ? DateTime.parse(data['status_updated_at'])
+          : null,
     );
   }
+
+  // Helper to get the effective status (prefer latest_status from real-time updates)
+  String get effectiveStatus => latestStatus ?? status;
 }
 
 class StatusUpdate {
@@ -129,70 +144,46 @@ class IncidentService {
   static final SupabaseClient _supabase = Supabase.instance.client;
 
   static Future<void> createInitialIncident(
-  Map<String, dynamic> incidentData,
-) async {
-  try {
-    // Insert the main incident record
-    final response = await _supabase
-        .from('incidents')
-        .insert(incidentData)
-        .select();
-    
-    if (response.isNotEmpty) {
-      final incidentId = response.first['id'].toString();
+    Map<String, dynamic> incidentData,
+  ) async {
+    try {
+      // Insert the main incident record
+      final response = await _supabase
+          .from('incidents')
+          .insert(incidentData)
+          .select();
       
-      // Create initial status update record for 'pending'
-      await _supabase
-          .from('incident_status_updates')
-          .insert({
-            'incident_id': incidentId,
-            'status': 'pending',
-            'note': 'Incident reported',
-            'updated_by': incidentData['name'] ?? 'Anonymous',
-            'created_at': DateTime.now().toIso8601String(),
-          });
-    }
-  } catch (e) {
-    throw Exception('Failed to create incident: $e');
-  }
-}
-
-static Future<void> migrateExistingIncidents() async {
-  try {
-    // Get all incidents that don't have a status update record
-    final incidents = await _supabase
-        .from('incidents')
-        .select('id, name, timestamp, created_at');
-    
-    for (final incident in incidents) {
-      final statusUpdates = await _supabase
-          .from('incident_status_updates')
-          .select()
-          .eq('incident_id', incident['id']);
-      
-      if (statusUpdates.isEmpty) {
-        // Create initial pending status update for existing incidents
+      if (response.isNotEmpty) {
+        final incidentId = response.first['id'].toString();
+        
+        // Create initial status update record for 'pending'
         await _supabase
             .from('incident_status_updates')
             .insert({
-              'incident_id': incident['id'],
+              'incident_id': incidentId,
               'status': 'pending',
               'note': 'Incident reported',
-              'updated_by': incident['name'] ?? 'Anonymous',
-              'created_at': incident['created_at'] ?? incident['timestamp'] ?? DateTime.now().toIso8601String(),
+              'updated_by': incidentData['name'] ?? 'Anonymous',
+              'created_at': DateTime.now().toIso8601String(),
             });
       }
+    } catch (e) {
+      throw Exception('Failed to create incident: $e');
     }
-  } catch (e) {
-    print('Migration error: $e');
   }
-}
 
   static Stream<List<Map<String, dynamic>>> getIncidentsStream() {
     return _supabase
         .from('incidents')
         .stream(primaryKey: ['id'])
         .order('timestamp', ascending: false);
+  }
+
+  static Stream<List<Map<String, dynamic>>> getStatusUpdatesStream() {
+    return _supabase
+        .from('incident_status_updates')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: false);
   }
 
   static Future<void> deleteIncident(String id) async {
@@ -405,7 +396,9 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<String> _selectedIncidents = [];
-  final List<Map<String, dynamic>> _currentDocs = [];
+  final Map<String, Map<String, dynamic>> _incidentsMap = {};
+  final StreamController<List<Map<String, dynamic>>> _incidentsController = 
+      StreamController<List<Map<String, dynamic>>>.broadcast();
 
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
@@ -416,12 +409,17 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
   bool _isMultiSelectMode = false;
   bool _isLoading = false;
   bool _hasNewUpdates = false;
+  int _dataVersion = 0;
+
+  StreamSubscription? _incidentsSubscription;
+  StreamSubscription? _statusUpdatesSubscription;
 
   @override
   void initState() {
     super.initState();
     _initializeControllers();
     _setupAnimations();
+    _setupRealTimeSubscriptions();
   }
 
   @override
@@ -450,10 +448,141 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     });
   }
 
+  void _setupRealTimeSubscriptions() {
+    _setupIncidentsSubscription();
+    _setupStatusUpdatesSubscription();
+  }
+
+  void _setupIncidentsSubscription() {
+    _incidentsSubscription?.cancel();
+    
+    _incidentsSubscription = IncidentService.getIncidentsStream()
+        .handleError((error) {
+      debugPrint('❌ Incidents stream error: $error');
+      // Reconnect after delay
+      Future.delayed(const Duration(seconds: 5), () {
+        if (mounted) _setupIncidentsSubscription();
+      });
+    }).listen(_handleIncidentsUpdate);
+  }
+
+  void _setupStatusUpdatesSubscription() {
+    _statusUpdatesSubscription?.cancel();
+    
+    _statusUpdatesSubscription = IncidentService.getStatusUpdatesStream()
+        .handleError((error) {
+      debugPrint('❌ Status updates stream error: $error');
+      // Reconnect after delay
+      Future.delayed(const Duration(seconds: 5), () {
+        if (mounted) _setupStatusUpdatesSubscription();
+      });
+    }).listen(_handleStatusUpdates);
+  }
+
+  void _handleIncidentsUpdate(List<Map<String, dynamic>> incidents) {
+    debugPrint('🔄 Received ${incidents.length} incidents from stream');
+    
+    bool hasChanges = false;
+    
+    for (final incident in incidents) {
+      final id = incident['id'].toString();
+      final eventType = incident['type'] as String?;
+      final newData = incident['new'] as Map<String, dynamic>?;
+      final oldData = incident['old'] as Map<String, dynamic>?;
+
+      switch (eventType) {
+        case 'INSERT':
+          if (newData != null) {
+            _incidentsMap[id] = newData;
+            hasChanges = true;
+            _hasNewUpdates = true;
+            debugPrint('➕ New incident: $id');
+          }
+          break;
+        case 'UPDATE':
+          if (newData != null) {
+            _incidentsMap[id] = {
+              ..._incidentsMap[id] ?? {},
+              ...newData,
+            };
+            hasChanges = true;
+            debugPrint('✏️ Updated incident: $id');
+          }
+          break;
+        case 'DELETE':
+          if (oldData != null) {
+            _incidentsMap.remove(id);
+            hasChanges = true;
+            debugPrint('🗑️ Deleted incident: $id');
+          }
+          break;
+        default:
+          // Initial data or full refresh
+          _incidentsMap[id] = incident;
+          hasChanges = true;
+      }
+    }
+
+    if (hasChanges && mounted) {
+      _notifyDataUpdate();
+      debugPrint('📊 Total incidents in map: ${_incidentsMap.length}');
+    }
+  }
+
+  void _handleStatusUpdates(List<Map<String, dynamic>> statusUpdates) {
+    debugPrint('🔄 Received ${statusUpdates.length} status updates from stream');
+    
+    bool hasChanges = false;
+    
+    for (final update in statusUpdates) {
+      final eventType = update['type'] as String?;
+      final newData = update['new'] as Map<String, dynamic>?;
+      
+      if (eventType == 'INSERT' && newData != null) {
+        final incidentId = newData['incident_id'].toString();
+        final status = newData['status'].toString();
+        final timestamp = newData['created_at'] as String?;
+        
+        if (_incidentsMap.containsKey(incidentId)) {
+          // Update the incident with latest status
+          _incidentsMap[incidentId] = {
+            ..._incidentsMap[incidentId]!,
+            'latest_status': status,
+            'status_updated_at': timestamp,
+          };
+          hasChanges = true;
+          debugPrint('🔄 Status updated for incident $incidentId: $status');
+        }
+      }
+    }
+    
+    if (hasChanges && mounted) {
+      _notifyDataUpdate();
+    }
+  }
+
+  void _notifyDataUpdate() {
+    _dataVersion++;
+    final incidentsList = _incidentsMap.values.toList();
+    // Sort by timestamp (newest first)
+    incidentsList.sort((a, b) {
+      final timeA = a['timestamp'] as String?;
+      final timeB = b['timestamp'] as String?;
+      if (timeA == null || timeB == null) return 0;
+      return timeB.compareTo(timeA);
+    });
+    
+    _incidentsController.add(incidentsList);
+    setState(() {});
+  }
+
   void _disposeControllers() {
     _searchController.dispose();
     _animationController.dispose();
     _scrollController.dispose();
+    _incidentsSubscription?.cancel();
+    _statusUpdatesSubscription?.cancel();
+    _incidentsController.close();
   }
 
   // Selection Management
@@ -476,16 +605,21 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
   }
 
   void _selectAllIncidents() {
+    final currentIncidents = _getCurrentIncidentsList();
     setState(() {
-      if (_selectedIncidents.length == _currentDocs.length) {
+      if (_selectedIncidents.length == currentIncidents.length) {
         _selectedIncidents.clear();
         _isMultiSelectMode = false;
       } else {
         _selectedIncidents.clear();
-        _selectedIncidents.addAll(_currentDocs.map((doc) => doc['id'].toString()));
+        _selectedIncidents.addAll(currentIncidents.map((doc) => doc['id'].toString()));
         _isMultiSelectMode = true;
       }
     });
+  }
+
+  List<Map<String, dynamic>> _getCurrentIncidentsList() {
+    return _incidentsMap.values.toList();
   }
 
   // Delete Operations
@@ -761,7 +895,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
         child: TextField(
           controller: _searchController,
           decoration: InputDecoration(
-            hintText: 'Search incidents by location or type...',
+            hintText: 'Search incidents by location, landmark or type...',
             prefixIcon:
                 Icon(Icons.search_rounded, color: IncidentReportConstants.colorScheme['primary']),
             suffixIcon: _searchQuery.isNotEmpty
@@ -877,7 +1011,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
           child: Row(
             children: [
               Checkbox(
-                value: _selectedIncidents.length == _currentDocs.length && _currentDocs.isNotEmpty,
+                value: _selectedIncidents.length == _incidentsMap.length && _incidentsMap.isNotEmpty,
                 onChanged: (value) => _selectAllIncidents(),
                 activeColor: IncidentReportConstants.colorScheme['primary'],
               ),
@@ -923,7 +1057,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
 
   Widget _buildEmergencyList() {
     return StreamBuilder<List<Map<String, dynamic>>>(
-      stream: IncidentService.getIncidentsStream(),
+      stream: _incidentsController.stream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return _buildErrorState(snapshot.error.toString());
@@ -938,8 +1072,6 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
         }
 
         final filteredDocs = _filterEmergencies(snapshot.data!);
-        _currentDocs.clear();
-        _currentDocs.addAll(filteredDocs);
 
         if (filteredDocs.isEmpty) {
           return _buildEmptyState();
@@ -1237,6 +1369,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     
     return docs.where((doc) {
       final location = (doc['address'] ?? '').toString().toLowerCase();
+      final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
       final type = (doc['incident_type'] ?? '').toString().toLowerCase();
       final timestamp = doc['timestamp'];
       
@@ -1259,6 +1392,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
       // Apply search filter
       return _searchQuery.isEmpty ||
           location.contains(_searchQuery) ||
+          landmark.contains(_searchQuery) ||
           type.contains(_searchQuery);
     }).toList();
   }
@@ -1383,6 +1517,9 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
       _hasNewUpdates = false;
     });
 
+    // Force refresh by re-subscribing to streams
+    _setupRealTimeSubscriptions();
+
     await Future.delayed(const Duration(seconds: 1));
 
     setState(() {
@@ -1494,7 +1631,26 @@ class IncidentCard extends StatelessWidget {
               ],
             ),
 
-            const SizedBox(height: 6),
+            /// LANDMARK (ADDED)
+            if (incident.landmark != null && incident.landmark!.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Icon(Icons.place_rounded, size: 16, color: Colors.blueGrey.shade600),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      "Near ${incident.landmark!}",
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.blueGrey.shade700,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
 
             /// REPORTER + TIME
             Row(
@@ -1637,7 +1793,7 @@ class IncidentCard extends StatelessWidget {
   }
 }
 
-// Incident Details Modal - SINGLE VERSION
+// Incident Details Modal
 class IncidentDetailsModal extends StatefulWidget {
   final IncidentData incident;
   final String userRole;
@@ -1910,6 +2066,18 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
                         color: Colors.white.withOpacity(0.9),
                       ),
                     ),
+                    // ADDED LANDMARK TO HEADER
+                    if (widget.incident.landmark != null && widget.incident.landmark!.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        "Near ${widget.incident.landmark!}",
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.white.withOpacity(0.8),
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -1922,6 +2090,13 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
           title: 'Location',
           content: widget.incident.address ?? 'Unknown location',
         ),
+        // ADDED LANDMARK SECTION
+        if (widget.incident.landmark != null && widget.incident.landmark!.isNotEmpty)
+          _buildDetailSection(
+            icon: Icons.place_rounded,
+            title: 'Landmark',
+            content: widget.incident.landmark!,
+          ),
         _buildDetailSection(
           icon: Icons.access_time_rounded,
           title: 'Reported',

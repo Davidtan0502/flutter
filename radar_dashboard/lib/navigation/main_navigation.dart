@@ -3,7 +3,7 @@ import 'package:animations/animations.dart';
 import 'package:supabase_flutter/supabase_flutter.dart'; // Add this import
 import 'package:radar_dashboard/dashboard/dashboard_screen.dart';
 import 'package:radar_dashboard/screens/analytics_screen.dart';
-import 'package:radar_dashboard/screens/incident_report_screen.dart';
+import 'package:radar_dashboard/screens/incidents/incident_report_screen.dart';
 import 'package:radar_dashboard/screens/mapping_screen.dart';
 import 'package:radar_dashboard/screens/settings_screen.dart';
 import 'package:radar_dashboard/login/login_register_screen.dart';

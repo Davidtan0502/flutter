@@ -12,6 +12,7 @@ class WeatherMonitoring extends StatefulWidget {
 
 class _WeatherMonitoringState extends State<WeatherMonitoring> {
   Map<String, dynamic>? weatherData;
+  List<Map<String, dynamic>> forecastData = [];
   bool isLoading = false;
   String errorMessage = '';
   final TextEditingController _cityController = TextEditingController();
@@ -49,6 +50,9 @@ class _WeatherMonitoringState extends State<WeatherMonitoring> {
           currentCity = city;
           _cityController.clear();
         });
+        
+        // Generate mock forecast data for today, tomorrow, and next day
+        _generateMockForecast();
       } else if (response.statusCode == 404) {
         setState(() {
           errorMessage = 'City "$city" not found. Please try another location.';
@@ -69,6 +73,39 @@ class _WeatherMonitoringState extends State<WeatherMonitoring> {
     }
   }
 
+  void _generateMockForecast() {
+    final now = DateTime.now();
+    final tomorrow = now.add(const Duration(days: 1));
+    final nextDay = now.add(const Duration(days: 2));
+    
+    // Mock forecast data based on current condition
+    final currentCondition = weatherData!['condition'];
+    final currentTemp = weatherData!['temp'];
+    
+    setState(() {
+      forecastData = [
+        {
+          'date': now,
+          'day': 'Today',
+          'temp': currentTemp,
+          'condition': currentCondition,
+        },
+        {
+          'date': tomorrow,
+          'day': 'Tomorrow',
+          'temp': currentTemp + (currentCondition.toLowerCase() == 'rain' ? -2 : 1),
+          'condition': currentCondition,
+        },
+        {
+          'date': nextDay,
+          'day': 'Next Day',
+          'temp': currentTemp + (currentCondition.toLowerCase() == 'rain' ? -1 : 2),
+          'condition': currentCondition,
+        },
+      ];
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -80,7 +117,6 @@ class _WeatherMonitoringState extends State<WeatherMonitoring> {
       child: ConstrainedBox(
         constraints: const BoxConstraints(
           minWidth: double.infinity,
-          maxHeight: 300, // Set a maximum height
         ),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -124,7 +160,7 @@ class _WeatherMonitoringState extends State<WeatherMonitoring> {
                   }
                 },
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 5),
               
               if (isLoading)
                 const Expanded(
@@ -135,10 +171,12 @@ class _WeatherMonitoringState extends State<WeatherMonitoring> {
                   ),
                 )
               else if (weatherData != null)
-                Flexible(
-                  child: SingleChildScrollView(
-                    child: _buildWeatherDisplay(),
-                  ),
+                Column(
+                  children: [
+                    _buildWeatherDisplay(),
+                    const SizedBox(height: 5),
+                    _buildForecastContainer(),
+                  ],
                 ),
             ],
           ),
@@ -201,7 +239,7 @@ class _WeatherMonitoringState extends State<WeatherMonitoring> {
               ),
             ],
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 5),
           
           // Weather details
           Wrap(
@@ -214,6 +252,109 @@ class _WeatherMonitoringState extends State<WeatherMonitoring> {
               _buildWeatherDetail('Pressure', '${weatherData!['pressure']} hPa', Icons.speed),
             ],
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildForecastContainer() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey[300]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'WEATHER FORECAST',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blueGrey[800],
+                ),
+              ),
+              Text(
+                '3-Day Forecast',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.blue[600],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (forecastData.isEmpty)
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Text(
+                'No forecast data available',
+                style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 11,
+                  fontStyle: FontStyle.italic,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            )
+          else
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: forecastData.map((forecast) {
+                return Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey[300]!),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.05),
+                          blurRadius: 1,
+                          offset: const Offset(0, 1),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          forecast['day'],
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                            color: Colors.blueGrey[700],
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Icon(
+                          _getWeatherIcon(forecast['condition']),
+                          size: 16,
+                          color: _getWeatherColor(forecast['condition']),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${forecast['temp'].toStringAsFixed(0)}°C',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue[600],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
         ],
       ),
     );
