@@ -1,10 +1,12 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:radar_dashboard/dashboard/admin%20panel%20screen/admin_management_screen.dart';
+import 'package:radar_dashboard/login/reset_password_screen.dart';
 import 'package:radar_dashboard/supabase_config.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:radar_dashboard/login/login_register_screen.dart';
 import 'package:radar_dashboard/login/terms_and_condition.dart';
 import 'package:radar_dashboard/navigation/main_navigation.dart';
-import 'package:radar_dashboard/login/admin/admin_panel_screen.dart'; 
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 
@@ -101,8 +103,8 @@ class _ProjectRadarAppState extends State<ProjectRadarApp> {
       final userRole = await _getUserRoleWithFallback(user.id);
       
       if (userRole != null) {
-        // Valid user found, navigate to dashboard
-        _navigateToDashboard(userRole);
+        // Valid user found, navigate to appropriate screen
+        _navigateToUserScreen(userRole);
       } else {
         // User not found or RLS error
         debugPrint('User not authorized for dashboard access');
@@ -158,8 +160,8 @@ class _ProjectRadarAppState extends State<ProjectRadarApp> {
         return null;
       }
 
-      // Only allow 'admin' or 'user' roles
-      if (userRole != 'admin' && userRole != 'user') {
+      // Allow 'admin', 'moderator', or 'user' roles
+      if (userRole != 'admin' && userRole != 'moderator' && userRole != 'user') {
         debugPrint('Invalid user role: $userRole');
         return null;
       }
@@ -216,7 +218,8 @@ class _ProjectRadarAppState extends State<ProjectRadarApp> {
         return null;
       }
 
-      if (userRole != 'admin' && userRole != 'user') {
+      // Allow 'admin', 'moderator', or 'user' roles
+      if (userRole != 'admin' && userRole != 'moderator' && userRole != 'user') {
         return null;
       }
 
@@ -237,9 +240,9 @@ class _ProjectRadarAppState extends State<ProjectRadarApp> {
     }
   }
 
-  void _navigateToDashboard(String userRole) {
-    final routeName = userRole == 'admin' ? '/admin-dashboard' : '/user-dashboard';
-    debugPrint('Navigating to: $routeName');
+  void _navigateToUserScreen(String userRole) {
+    final routeName = _getUserRoute(userRole);
+    debugPrint('Navigating to: $routeName for role: $userRole');
     
     // Use a post-frame callback to ensure safe navigation
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -248,6 +251,19 @@ class _ProjectRadarAppState extends State<ProjectRadarApp> {
         (route) => false,
       );
     });
+  }
+
+  String _getUserRoute(String userRole) {
+    switch (userRole) {
+      case 'admin':
+        return '/admin-management'; // Admin goes only to admin management
+      case 'moderator':
+        return '/moderator-dashboard';
+      case 'user':
+        return '/user-dashboard';
+      default:
+        return '/login';
+    }
   }
 
   void _navigateToLogin() {
@@ -294,29 +310,66 @@ class _ProjectRadarAppState extends State<ProjectRadarApp> {
       home: const AuthWrapper(),
       routes: {
         '/login': (context) => const LoginRegisterScreen(),
-        '/admin-dashboard': (context) => NavigationScreen(
+        '/reset-password': (context) => const ResetPasswordScreen(),
+        '/register': (context) => const LoginRegisterScreen(), 
+        '/admin-management': (context) => AdminManagementScreen(),
+        '/moderator-dashboard': (context) => NavigationScreen(
               isDarkMode: isDarkMode,
               onToggleTheme: toggleTheme,
-              userRole: 'admin',
+              userRole: 'moderator',
             ),
         '/user-dashboard': (context) => NavigationScreen(
               isDarkMode: isDarkMode,
               onToggleTheme: toggleTheme,
               userRole: 'user',
             ),
-        '/admin-panel': (context) => const AdminPanelScreen(),
         '/terms': (context) => const TermsAndConditionsScreen(),
       },
-      onUnknownRoute: (settings) {
-        return MaterialPageRoute(
-          builder: (context) => const LoginRegisterScreen(),
-        );
+      
+      onGenerateRoute: (settings) {
+        debugPrint('🔄 Route requested: ${settings.name}');
+        
+        String routeName = settings.name ?? '/';
+        
+        // Handle hash-based URLs (/#/reset-password)
+        if (routeName.startsWith('/#')) {
+          routeName = routeName.substring(2);
+          debugPrint('🌐 Converted hash route to: $routeName');
+        }
+        
+        // Handle query parameters for multi-app support
+        final uri = Uri.parse(routeName.contains('://') ? routeName : 'http://localhost$routeName');
+        
+        debugPrint('🔗 URI path: ${uri.path}');
+        debugPrint('🔗 URI fragment: ${uri.fragment}');
+        debugPrint('🔗 URI query: ${uri.query}');
+        
+        // Check if this is a password reset flow
+        if (uri.path == '/reset-password' || 
+            uri.fragment.contains('type=recovery') ||
+            uri.query.contains('type=recovery')) {
+          debugPrint('🎯 Password reset flow detected');
+          return MaterialPageRoute(builder: (context) => const ResetPasswordScreen());
+        }
+        
+        // Handle regular routes
+        switch (uri.path) {
+          case '/reset-password':
+            debugPrint('🎯 Navigating to ResetPasswordScreen');
+            return MaterialPageRoute(builder: (context) => const ResetPasswordScreen());
+          case '/login':
+            return MaterialPageRoute(builder: (context) => const LoginRegisterScreen());
+          default:
+            return MaterialPageRoute(builder: (context) => const AuthWrapper());
+        }
       },
+      
+      // Add this to handle initial route
+      initialRoute: '/',
     );
   }
 }
 
-// Improved Auth wrapper with better error handling
 class AuthWrapper extends StatefulWidget {
   const AuthWrapper({super.key});
 
@@ -327,162 +380,198 @@ class AuthWrapper extends StatefulWidget {
 class _AuthWrapperState extends State<AuthWrapper> {
   final SupabaseClient _supabase = Supabase.instance.client;
   bool _isLoading = true;
-  String? _loadingMessage;
+  bool _isCheckingAuth = false;
 
   @override
   void initState() {
     super.initState();
-    _checkAuth();
+    _checkInitialAuth();
+    _checkResetPasswordUrl(); // Add this line
   }
 
-  Future<void> _checkAuth() async {
+    void _checkResetPasswordUrl() {
+    if (!_isLoading) return;
+    
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (kIsWeb) {
+        final currentUrl = Uri.base.toString();
+        final fragment = Uri.base.fragment;
+        
+        debugPrint('🔗 Current URL: $currentUrl');
+        debugPrint('🔗 Fragment: $fragment');
+        
+        // Check if this is a reset password callback
+        if (fragment.contains('access_token') || 
+            fragment.contains('type=recovery') ||
+            fragment.contains('reset-password')) {
+          debugPrint('🎯 Reset password link detected!');
+          
+          // Navigate to reset password screen
+          Navigator.of(context).pushReplacementNamed('/reset-password');
+        }
+      }
+    });
+  }
+
+  Future<void> _checkInitialAuth() async {
+    // Prevent multiple simultaneous auth checks
+    if (_isCheckingAuth) return;
+    _isCheckingAuth = true;
+
     try {
-      _updateLoadingMessage('Initializing...');
-      await Future.delayed(const Duration(milliseconds: 800));
+      debugPrint('=== Starting initial auth check ===');
       
       final currentUser = _supabase.auth.currentUser;
-      debugPrint('Auth check - Current user: $currentUser');
+      debugPrint('Current user: ${currentUser?.email}');
+      debugPrint('User ID: ${currentUser?.id}');
       
       if (currentUser != null) {
-        // Check if email is confirmed or if we're in development mode
+        // Check email confirmation (with development mode bypass)
         final emailConfirmed = currentUser.emailConfirmedAt != null || _isDevelopmentMode();
         
         if (!emailConfirmed) {
-          debugPrint('Email not confirmed yet');
-          _updateLoadingMessage('Please verify your email...');
-          await Future.delayed(const Duration(seconds: 2));
+          debugPrint('Email not confirmed - signing out');
           await _safeSignOut();
           _finishLoading();
           return;
         }
 
-        _updateLoadingMessage('Checking permissions...');
+        debugPrint('Email confirmed, checking user role...');
         
-        // Get user role with proper error handling
+        // Get user role
         final userRole = await _getUserRoleSafe(currentUser.id);
+        debugPrint('User role result: $userRole');
         
-        if (userRole != null) {
-          _updateLoadingMessage('Welcome back!...');
-          await Future.delayed(const Duration(milliseconds: 500));
+        if (userRole != null && _isValidRole(userRole)) {
+          debugPrint('User authorized with role: $userRole - navigating to appropriate screen');
           
-          // Navigate to dashboard
+          // Use a small delay to ensure context is ready
+          await Future.delayed(const Duration(milliseconds: 100));
+          
           if (mounted) {
-            Navigator.of(context).pushReplacementNamed(
-              userRole == 'admin' ? '/admin-dashboard' : '/user-dashboard',
-            );
+            _navigateToUserScreen(userRole);
+            return; // Important: return here to prevent finishing loading
           }
-          return;
         } else {
-          debugPrint('User not authorized for dashboard access');
-          _updateLoadingMessage('Access denied...');
-          await Future.delayed(const Duration(seconds: 1));
+          debugPrint('User not authorized or invalid role - signing out');
           await _safeSignOut();
         }
+      } else {
+        debugPrint('No current user found');
       }
       
-      // If we get here, user is not authenticated or not authorized
-      debugPrint('User not authenticated or not authorized, going to login');
       _finishLoading();
       
-    } catch (e) {
+    } catch (e, stackTrace) {
       debugPrint('Auth check error: $e');
+      debugPrint('Stack trace: $stackTrace');
       await _safeSignOut();
       _finishLoading();
+    } finally {
+      _isCheckingAuth = false;
     }
   }
 
   Future<String?> _getUserRoleSafe(String userId) async {
     try {
-      final userData = await _supabase
+      debugPrint('Fetching user role from dashboard_users table...');
+      
+      final response = await _supabase
           .from('dashboard_users')
           .select('role, email')
           .eq('id', userId)
           .single()
-          .timeout(const Duration(seconds: 5));
+          .timeout(const Duration(seconds: 10));
 
-      final userRole = userData['role'] as String?;
-      final userEmail = userData['email'] as String?;
+      final userRole = response['role'] as String?;
+      final userEmail = response['email'] as String?;
       
-      debugPrint('User role check - Email: $userEmail, Role: $userRole');
+      debugPrint('User role query successful - Email: $userEmail, Role: $userRole');
       
-      // Validate that user exists and has a valid role
-      if (userRole == null) {
-        return null;
-      }
-
-      // Only allow 'admin' or 'user' roles
-      if (userRole != 'admin' && userRole != 'user') {
-        return null;
-      }
-
       return userRole;
       
     } on PostgrestException catch (e) {
+      debugPrint('Postgrest error: ${e.message}');
+      
       // Handle RLS infinite recursion
-      if (e.message.contains('infinite recursion')) {
-        debugPrint('RLS recursion detected, using service role fallback');
+      if (e.message?.contains('infinite recursion') == true) {
+        debugPrint('RLS recursion detected, trying service role...');
         return await _getUserRoleWithServiceRole(userId);
       }
       // Handle "no rows returned" error
-      else if (e.message.contains('PGRST116') || e.message.contains('row not found')) {
+      else if (e.message?.contains('PGRST116') == true || e.message?.contains('row not found') == true) {
         debugPrint('User not found in dashboard_users table');
         return null;
       } else {
-        debugPrint('Database error: ${e.message}');
+        debugPrint('Other database error, trying service role...');
         return await _getUserRoleWithServiceRole(userId);
       }
     } on TimeoutException {
-      debugPrint('Timeout getting user role');
+      debugPrint('Timeout getting user role, trying service role...');
       return await _getUserRoleWithServiceRole(userId);
     } catch (e) {
-      debugPrint('Unexpected error: $e');
+      debugPrint('Unexpected error getting user role: $e');
       return await _getUserRoleWithServiceRole(userId);
     }
   }
 
   Future<String?> _getUserRoleWithServiceRole(String userId) async {
     try {
-      debugPrint('Using service role to get user role');
+      debugPrint('Using service role to get user role...');
       
       final adminClient = SupabaseClient(
         SupabaseConfig.url,
         SupabaseConfig.serviceRoleKey
       );
       
-      final userData = await adminClient
+      final response = await adminClient
           .from('dashboard_users')
           .select('role, email')
           .eq('id', userId)
           .single()
-          .timeout(const Duration(seconds: 5));
+          .timeout(const Duration(seconds: 10));
 
-      final userRole = userData['role'] as String?;
-      final userEmail = userData['email'] as String?;
+      final userRole = response['role'] as String?;
+      final userEmail = response['email'] as String?;
       
-      debugPrint('Service role check - Email: $userEmail, Role: $userRole');
+      debugPrint('Service role query successful - Email: $userEmail, Role: $userRole');
       
-      if (userRole == null) {
-        return null;
-      }
-
-      if (userRole != 'admin' && userRole != 'user') {
-        return null;
-      }
-
       return userRole;
       
     } catch (e) {
-      debugPrint('Service role method also failed: $e');
+      debugPrint('Service role method failed: $e');
       return null;
     }
   }
 
-  void _updateLoadingMessage(String message) {
-    if (mounted) {
-      setState(() {
-        _loadingMessage = message;
-      });
+  bool _isValidRole(String role) {
+    return role == 'admin' || role == 'moderator' || role == 'user';
+  }
+
+  void _navigateToUserScreen(String userRole) {
+    debugPrint('Navigating to screen for role: $userRole');
+    
+    String routeName;
+    switch (userRole) {
+      case 'admin':
+        routeName = '/admin-management'; // Admin goes only to admin management
+        break;
+      case 'moderator':
+        routeName = '/moderator-dashboard';
+        break;
+      case 'user':
+        routeName = '/user-dashboard';
+        break;
+      default:
+        routeName = '/login';
     }
+    
+    // Use Navigator to navigate and replace the AuthWrapper
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        Navigator.of(context).pushReplacementNamed(routeName);
+      }
+    });
   }
 
   void _finishLoading() {
@@ -496,12 +585,12 @@ class _AuthWrapperState extends State<AuthWrapper> {
   Future<void> _safeSignOut() async {
     try {
       await _supabase.auth.signOut();
+      debugPrint('Signed out successfully');
     } catch (e) {
       debugPrint('Error during sign out: $e');
     }
   }
 
-  // Helper method to check if we're in development mode
   bool _isDevelopmentMode() {
     return SupabaseConfig.url.contains('localhost') || 
            SupabaseConfig.url.contains('127.0.0.1') ||
@@ -529,7 +618,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
               ),
               const SizedBox(height: 10),
               Text(
-                _loadingMessage ?? 'Checking authentication...',
+                'Checking authentication...',
                 style: TextStyle(
                   color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
                 ),

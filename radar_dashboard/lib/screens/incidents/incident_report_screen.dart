@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -32,7 +31,26 @@ class IncidentReportConstants {
     'declined'
   ];
 
-  static const List<String> filterOptions = ['recent', 'all'];
+  static const List<String> filterOptions = ['recent', 'all', 'spam'];
+
+  // Add to IncidentReportConstants class
+  static const List<String> spamPatterns = [
+    'http://', 'https://', 'www.', '.com', 'buy now', 'click here',
+    'make money', 'free money', 'urgent money', 'lottery', 'winner',
+    'earn money', 'work from home', 'get rich', 'investment', 'bitcoin',
+    'crypto', 'password', 'login', 'account', 'verify', 'congratulations'
+  ];
+// Add to IncidentReportConstants class
+  static const List<String> suspiciousIncidentTypes = [
+    'test', 'demo', 'sample', 'fake', 'spam', 'unknown', 'other', 'miscellaneous',
+    'check', 'verify', 'trial', 'experiment', 'practice', 'dummy', 'bogus',
+    // Common misspellings
+    'tst', 'demoo', 'sampel', 'fak', 'spamm', 'unknow', 'misc', 'miscelaneous',
+    'chek', 'verif', 'trail', 'expirement', 'practise', 'dumy', 'bogous',
+    // Additional suspicious types
+    'none', 'na', 'n/a', 'not sure', 'unspecified', 'random', 'anything',
+    'whatever', 'something', 'anything else', 'test123', 'demo1', 'sample1'
+  ];
 }
 
 // Data Models
@@ -172,6 +190,75 @@ class IncidentService {
     }
   }
 
+  // Add to IncidentService class - Spam Filter Methods
+  static Future<bool> isSpamIncident(Map<String, dynamic> incidentData) async {
+    try {
+      final supabase = Supabase.instance.client;
+      
+      // Check 1: Recent duplicate incidents from same reporter
+      final recentIncidents = await supabase
+          .from('incidents')
+          .select()
+          .eq('contact_number', incidentData['contact_number'])
+          .gte('created_at', 
+              DateTime.now().subtract(const Duration(minutes: 30)).toIso8601String())
+          .limit(5);
+
+      if (recentIncidents.length >= 3) {
+        return true; // Too many incidents in short time
+      }
+
+      // Check 2: Similar content detection
+      final description = incidentData['description']?.toString() ?? '';
+      if (description.length > 20) {
+        final similarIncidents = await supabase
+            .from('incidents')
+            .select()
+            .ilike('description', '%${description.substring(0, 20)}%')
+            .gte('created_at', 
+                DateTime.now().subtract(const Duration(hours: 1)).toIso8601String())
+            .limit(3);
+
+        if (similarIncidents.length >= 2) {
+          return true; // Similar descriptions recently
+        }
+      }
+
+      // Check 3: Check against spam patterns
+      final descLower = description.toLowerCase();
+      for (final pattern in IncidentReportConstants.spamPatterns) {
+        if (descLower.contains(pattern)) {
+          return true;
+        }
+      }
+
+      return false;
+    } catch (e) {
+      debugPrint('Spam check error: $e');
+      return false; // Default to not spam if check fails
+    }
+  }
+
+  static Future<void> createInitialIncidentWithSpamCheck(
+    Map<String, dynamic> incidentData,
+  ) async {
+    try {
+      // Check for spam before creating incident
+      final isSpam = await isSpamIncident(incidentData);
+      
+      if (isSpam) {
+        // Log spam attempt but don't create incident
+        debugPrint('🚫 Spam incident blocked: ${incidentData['contact_number']}');
+        throw Exception('This incident appears to be spam and cannot be submitted.');
+      }
+
+      // Proceed with normal incident creation if not spam
+      await createInitialIncident(incidentData);
+    } catch (e) {
+      rethrow;
+    }
+  }
+
   static Stream<List<Map<String, dynamic>>> getIncidentsStream() {
     return _supabase
         .from('incidents')
@@ -256,7 +343,7 @@ class IncidentService {
               'incident_id': id,
               'status': status,
               'note': 'Bulk status update',
-              'updated_by': 'Admin',
+              'updated_by': 'moderator',
               'created_at': DateTime.now().toIso8601String(),
             });
       }
@@ -407,9 +494,8 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
   String _selectedFilter = 'recent';
   DateTime? _selectedDate;
   bool _isMultiSelectMode = false;
-  bool _isLoading = false;
   bool _hasNewUpdates = false;
-  int _dataVersion = 0;
+  DateTimeRange? _selectedDateRange;
 
   StreamSubscription? _incidentsSubscription;
   StreamSubscription? _statusUpdatesSubscription;
@@ -459,11 +545,11 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     _incidentsSubscription = IncidentService.getIncidentsStream()
         .handleError((error) {
       debugPrint('❌ Incidents stream error: $error');
-      // Reconnect after delay
+      // Reconnect after delay with exponential backoff
       Future.delayed(const Duration(seconds: 5), () {
         if (mounted) _setupIncidentsSubscription();
       });
-    }).listen(_handleIncidentsUpdate);
+    }).listen(_handleIncidentsUpdate, cancelOnError: false);
   }
 
   void _setupStatusUpdatesSubscription() {
@@ -472,62 +558,79 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     _statusUpdatesSubscription = IncidentService.getStatusUpdatesStream()
         .handleError((error) {
       debugPrint('❌ Status updates stream error: $error');
-      // Reconnect after delay
+      // Reconnect after delay with exponential backoff
       Future.delayed(const Duration(seconds: 5), () {
         if (mounted) _setupStatusUpdatesSubscription();
       });
-    }).listen(_handleStatusUpdates);
+    }).listen(_handleStatusUpdates, cancelOnError: false);
   }
 
-  void _handleIncidentsUpdate(List<Map<String, dynamic>> incidents) {
-    debugPrint('🔄 Received ${incidents.length} incidents from stream');
-    
-    bool hasChanges = false;
-    
-    for (final incident in incidents) {
-      final id = incident['id'].toString();
-      final eventType = incident['type'] as String?;
-      final newData = incident['new'] as Map<String, dynamic>?;
-      final oldData = incident['old'] as Map<String, dynamic>?;
+// Fix the _handleIncidentsUpdate method to properly handle DELETE events
+void _handleIncidentsUpdate(List<Map<String, dynamic>> incidents) {
+  debugPrint('🔄 Received ${incidents.length} incidents from stream');
+  
+  bool hasChanges = false;
+  
+  for (final incident in incidents) {
+    // Handle different event types from Supabase real-time
+    final eventType = incident['type'] as String?;
+    final newData = incident['new'] as Map<String, dynamic>?;
+    final oldData = incident['old'] as Map<String, dynamic>?;
 
-      switch (eventType) {
-        case 'INSERT':
-          if (newData != null) {
-            _incidentsMap[id] = newData;
-            hasChanges = true;
-            _hasNewUpdates = true;
-            debugPrint('➕ New incident: $id');
-          }
-          break;
-        case 'UPDATE':
-          if (newData != null) {
-            _incidentsMap[id] = {
-              ..._incidentsMap[id] ?? {},
-              ...newData,
-            };
-            hasChanges = true;
-            debugPrint('✏️ Updated incident: $id');
-          }
-          break;
-        case 'DELETE':
-          if (oldData != null) {
-            _incidentsMap.remove(id);
-            hasChanges = true;
-            debugPrint('🗑️ Deleted incident: $id');
-          }
-          break;
-        default:
-          // Initial data or full refresh
-          _incidentsMap[id] = incident;
+    switch (eventType) {
+      case 'INSERT':
+        if (newData != null) {
+          final id = newData['id'].toString();
+          _incidentsMap[id] = newData;
           hasChanges = true;
-      }
-    }
-
-    if (hasChanges && mounted) {
-      _notifyDataUpdate();
-      debugPrint('📊 Total incidents in map: ${_incidentsMap.length}');
+          _hasNewUpdates = true;
+          debugPrint('➕ New incident: $id');
+        }
+        break;
+      case 'UPDATE':
+        if (newData != null) {
+          final id = newData['id'].toString();
+          _incidentsMap[id] = {
+            ..._incidentsMap[id] ?? {},
+            ...newData,
+          };
+          hasChanges = true;
+          debugPrint('✏️ Updated incident: $id');
+        }
+        break;
+      case 'DELETE':
+        if (oldData != null) {
+          final id = oldData['id'].toString();
+          _incidentsMap.remove(id);
+          hasChanges = true;
+          debugPrint('🗑️ Deleted incident: $id');
+          
+          // Also remove from selection if it was selected
+          if (_selectedIncidents.contains(id)) {
+            _selectedIncidents.remove(id);
+          }
+        }
+        break;
+      default:
+        // Initial data or full refresh - handle as INSERT
+        final id = incident['id'].toString();
+        _incidentsMap[id] = incident;
+        hasChanges = true;
     }
   }
+
+  if (hasChanges && mounted) {
+    _notifyDataUpdate();
+    debugPrint('📊 Total incidents in map: ${_incidentsMap.length}');
+    
+    // Exit multi-select mode if no incidents are selected
+    if (_selectedIncidents.isEmpty && _isMultiSelectMode) {
+      setState(() {
+        _isMultiSelectMode = false;
+      });
+    }
+  }
+}
 
   void _handleStatusUpdates(List<Map<String, dynamic>> statusUpdates) {
     debugPrint('🔄 Received ${statusUpdates.length} status updates from stream');
@@ -562,18 +665,31 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
   }
 
   void _notifyDataUpdate() {
-    _dataVersion++;
     final incidentsList = _incidentsMap.values.toList();
     // Sort by timestamp (newest first)
     incidentsList.sort((a, b) {
-      final timeA = a['timestamp'] as String?;
-      final timeB = b['timestamp'] as String?;
+      final timeA = _safeParseDateTime(a['timestamp']);
+      final timeB = _safeParseDateTime(b['timestamp']);
       if (timeA == null || timeB == null) return 0;
       return timeB.compareTo(timeA);
     });
     
     _incidentsController.add(incidentsList);
     setState(() {});
+  }
+
+  DateTime? _safeParseDateTime(dynamic timestamp) {
+    if (timestamp == null) return null;
+    
+    try {
+      if (timestamp is DateTime) return timestamp;
+      if (timestamp is String) return DateTime.parse(timestamp);
+      if (timestamp is int) return DateTime.fromMillisecondsSinceEpoch(timestamp);
+      return null;
+    } catch (e) {
+      debugPrint('Error parsing timestamp: $e');
+      return null;
+    }
   }
 
   void _disposeControllers() {
@@ -623,77 +739,73 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
   }
 
   // Delete Operations
-  Future<void> _deleteIncident(String id, {bool showUndo = true}) async {
-    try {
-      // Get the document data before deleting for potential undo
-      final docSnapshot = await Supabase.instance.client
-          .from('incidents')
-          .select()
-          .eq('id', id)
-          .single();
-      
-      final incidentData = docSnapshot;
-      
-      // Delete the document
-      await Supabase.instance.client
-          .from('incidents')
-          .delete()
-          .eq('id', id);
-      
-      // Show undo snackbar if requested
-      if (showUndo && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('Incident deleted'),
-            backgroundColor: Colors.red,
-            action: SnackBarAction(
-              label: 'UNDO',
-              textColor: Colors.white,
-              onPressed: () => _undoDelete(id, incidentData),
-            ),
-            duration: const Duration(seconds: 5),
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to delete: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _undoDelete(String id, Map<String, dynamic>? data) async {
-    if (data == null) return;
+// Replace the _deleteIncident method with this fixed version
+Future<void> _deleteIncident(String id, {bool showUndo = true}) async {
+  try {
+    // Store the incident data for potential undo BEFORE deleting
+    final incidentData = _incidentsMap[id]?.cast<String, dynamic>();
     
-    try {
-      await Supabase.instance.client
-          .from('incidents')
-          .insert(data);
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Incident restored'),
-            backgroundColor: Colors.green,
+    // Delete from database first
+    await IncidentService.deleteIncident(id);
+    
+    // The real-time subscription will automatically remove it from _incidentsMap
+    // and trigger a UI update via _handleIncidentsUpdate
+    
+    if (showUndo && mounted && incidentData != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Incident deleted'),
+          backgroundColor: Colors.red,
+          action: SnackBarAction(
+            label: 'UNDO',
+            textColor: Colors.white,
+            onPressed: () => _undoDelete(id, incidentData),
           ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to restore: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    }
+  } catch (e) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to delete: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
+}
+
+// Fix the _undoDelete method
+Future<void> _undoDelete(String id, Map<String, dynamic> data) async {
+  try {
+    // Re-insert the incident with its original data
+    await Supabase.instance.client
+        .from('incidents')
+        .insert(data);
+    
+    // The real-time subscription will automatically add it back to _incidentsMap
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Incident restored'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  } catch (e) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to restore: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+}
 
   // Batch Operations
   Future<void> _batchUpdateStatus(String status) async {
@@ -718,83 +830,75 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     }
   }
 
-  Future<void> _showBatchDeleteConfirmation() async {
-    final confirmed = await _showConfirmationDialog(
-      title: 'Confirm Batch Delete',
-      content:
-          'Are you sure you want to delete ${_selectedIncidents.length} incidents? This action cannot be undone.',
-      confirmText: 'Delete',
-      confirmColor: IncidentReportConstants.colorScheme['error']!,
-    );
+Future<void> _showBatchDeleteConfirmation() async {
+  final confirmed = await _showConfirmationDialog(
+    title: 'Confirm Batch Delete',
+    content:
+        'Are you sure you want to delete ${_selectedIncidents.length} incidents? This action cannot be undone.',
+    confirmText: 'Delete',
+    confirmColor: IncidentReportConstants.colorScheme['error']!,
+  );
 
-    if (confirmed != true) return;
+  if (confirmed != true) return;
 
-    final incidentsToDelete = <String, Map<String, dynamic>>{};
-    for (final id in _selectedIncidents) {
-      try {
-        final docSnapshot = await Supabase.instance.client
-            .from('incidents')
-            .select()
-            .eq('id', id)
-            .single();
-
-        if (docSnapshot.isNotEmpty) {
-          incidentsToDelete[id] = docSnapshot;
-        }
-      } catch (e) {
-        if (kDebugMode) {
-          print('Error getting document $id: $e');
-        }
-      }
+  // Store incidents data for undo BEFORE deleting
+  final incidentsToDelete = <String, Map<String, dynamic>>{};
+  for (final id in _selectedIncidents) {
+    final incidentData = _incidentsMap[id]?.cast<String, dynamic>();
+    if (incidentData != null) {
+      incidentsToDelete[id] = incidentData;
     }
+  }
 
-    try {
-      await IncidentService.batchDeleteIncidents(_selectedIncidents);
+  try {
+    await IncidentService.batchDeleteIncidents(_selectedIncidents);
+    
+    // The real-time subscriptions will automatically update the UI
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Deleted ${_selectedIncidents.length} incidents'),
-            backgroundColor: IncidentReportConstants.colorScheme['error'],
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            action: SnackBarAction(
-              label: 'UNDO',
-              textColor: Colors.white,
-              onPressed: () => _undoBatchDelete(incidentsToDelete),
-            ),
-            duration: const Duration(seconds: 5),
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Deleted ${_selectedIncidents.length} incidents'),
+          backgroundColor: IncidentReportConstants.colorScheme['error'],
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          action: SnackBarAction(
+            label: 'UNDO',
+            textColor: Colors.white,
+            onPressed: () => _undoBatchDelete(incidentsToDelete),
           ),
-        );
-      }
-
-      _clearSelection();
-    } catch (e) {
-      _showErrorSnackbar('Failed to delete: $e');
+          duration: const Duration(seconds: 5),
+        ),
+      );
     }
+
+    _clearSelection();
+  } catch (e) {
+    _showErrorSnackbar('Failed to delete: $e');
   }
+}
 
-  Future<void> _undoBatchDelete(Map<String, Map<String, dynamic>> incidents) async {
-    if (incidents.isEmpty) return;
 
+Future<void> _undoBatchDelete(Map<String, Map<String, dynamic>> incidents) async {
+  if (incidents.isEmpty) return;
+
+  try {
+    // Re-insert all incidents
     for (final entry in incidents.entries) {
-      try {
-        await Supabase.instance.client
-            .from('incidents')
-            .insert(entry.value);
-      } catch (e) {
-        if (kDebugMode) {
-          print('Error restoring incident ${entry.key}: $e');
-        }
-      }
+      await Supabase.instance.client
+          .from('incidents')
+          .insert(entry.value);
     }
+    
+    // The real-time subscriptions will automatically update the UI
 
-    try {
+    if (mounted) {
       _showSuccessSnackbar('Incidents restored');
-    } catch (e) {
-      _showErrorSnackbar('Failed to restore: $e');
     }
+  } catch (e) {
+    _showErrorSnackbar('Failed to restore: $e');
   }
+}
 
   void _clearSelection() {
     setState(() {
@@ -864,7 +968,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
       elevation: 8,
       centerTitle: true,
       actions: [
-        if (widget.userRole == 'admin')
+        if (widget.userRole == 'moderator')
           IconButton(
             icon: Icon(
               _isMultiSelectMode ? Icons.cancel_rounded : Icons.select_all_rounded,
@@ -917,34 +1021,42 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     );
   }
 
-  Widget _buildFilterSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            _buildFilterChip(
-              label: 'Recent',
-              selected: _selectedFilter == 'recent',
-              onSelected: () => setState(() {
-                _selectedFilter = 'recent';
-                _selectedDate = null;
-              }),
-            ),
-            _buildFilterChip(
-              label: 'All Reports',
-              selected: _selectedFilter == 'all',
-              onSelected: () => setState(() => _selectedFilter = 'all'),
-            ),
-            if (_selectedFilter == 'all')
-              _buildDateFilterChip(),
-          ],
-        ),
-      ],
-    );
-  }
+Widget _buildFilterSection() {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          _buildFilterChip(
+            label: 'Recent',
+            selected: _selectedFilter == 'recent',
+            onSelected: () => setState(() {
+              _selectedFilter = 'recent';
+              _selectedDate = null;
+            }),
+          ),
+          _buildFilterChip(
+            label: 'All Reports',
+            selected: _selectedFilter == 'all',
+            onSelected: () => setState(() => _selectedFilter = 'all'),
+          ),
+          _buildFilterChip(
+            label: 'Spam Reports',
+            selected: _selectedFilter == 'spam',
+            onSelected: () => setState(() {
+              _selectedFilter = 'spam';
+              _selectedDate = null;
+            }),
+          ),
+          if (_selectedFilter == 'all')
+            _buildDateFilterChip(),
+        ],
+      ),
+    ],
+  );
+}
 
   Widget _buildFilterChip({
     required String label,
@@ -963,38 +1075,130 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     );
   }
 
-  Widget _buildDateFilterChip() {
-    return FilterChip(
-      label: Row(
+ Widget _buildDateFilterChip() {
+  final isSingleDateSelected = _selectedDate != null;
+  final isRangeSelected = _selectedDateRange != null;
+  final isAnyDateSelected = isSingleDateSelected || isRangeSelected;
+  
+  String getDateLabel() {
+    if (isRangeSelected) {
+      final start = DateFormat('MMM d').format(_selectedDateRange!.start);
+      final end = DateFormat('MMM d').format(_selectedDateRange!.end);
+      return '$start - $end';
+    } else if (isSingleDateSelected) {
+      return DateFormat('MMM d').format(_selectedDate!);
+    } else {
+      return "Date Range";
+    }
+  }
+
+  return FilterChip(
+    label: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.calendar_today_rounded, size: 16),
-          const SizedBox(width: 4),
-          Text(
-            _selectedDate == null
-                ? "Date"
-                : DateFormat('MMM d').format(_selectedDate!),
+          Icon(
+            isAnyDateSelected ? Icons.calendar_month_rounded : Icons.calendar_today_rounded,
+            size: 16,
+            color: isAnyDateSelected ? Colors.white : IncidentReportConstants.colorScheme['primary'],
           ),
+          const SizedBox(width: 6),
+          Text(
+            getDateLabel(),
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              color: isAnyDateSelected ? Colors.white : Colors.black87,
+            ),
+          ),
+          if (isAnyDateSelected) ...[
+            const SizedBox(width: 6),
+            Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.3),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.close_rounded,
+                size: 12,
+                color: Colors.white,
+              ),
+            ),
+          ],
         ],
       ),
-      selected: _selectedDate != null,
-      onSelected: (_) async {
-        final pickedDate = await showDatePicker(
+    ),
+    selected: isAnyDateSelected,
+    onSelected: (_) async {
+      if (isAnyDateSelected) {
+        // Clear date selection
+        setState(() {
+          _selectedDate = null;
+          _selectedDateRange = null;
+        });
+      } else {
+        // Show date range picker
+        final DateTimeRange? pickedRange = await showDateRangePicker(
           context: context,
-          initialDate: _selectedDate ?? DateTime.now(),
           firstDate: DateTime(2000),
           lastDate: DateTime.now(),
+          currentDate: DateTime.now(),
+          saveText: 'Apply',
+          helpText: 'Select Date Range',
+          confirmText: 'Apply',
+          cancelText: 'Cancel',
+          initialDateRange: _selectedDateRange,
+          initialEntryMode: DatePickerEntryMode.calendar,
+          builder: (context, child) {
+            return Theme(
+              data: Theme.of(context).copyWith(
+                colorScheme: ColorScheme.light(
+                  primary: IncidentReportConstants.colorScheme['primary']!,
+                  onPrimary: Colors.white,
+                  onSurface: Colors.black87,
+                ),
+                textButtonTheme: TextButtonThemeData(
+                  style: TextButton.styleFrom(
+                    foregroundColor: IncidentReportConstants.colorScheme['primary']!,
+                  ),
+                ),
+              ),
+              child: child!,
+            );
+          },
         );
-        if (pickedDate != null) {
+
+        if (pickedRange != null) {
           setState(() {
-            _selectedDate = pickedDate;
+            _selectedDateRange = pickedRange;
+            _selectedDate = null; // Clear single date selection
           });
         }
-      },
-      selectedColor: IncidentReportConstants.colorScheme['primary'],
-      checkmarkColor: Colors.white,
-    );
-  }
+      }
+    },
+    selectedColor: IncidentReportConstants.colorScheme['primary'],
+    checkmarkColor: Colors.transparent,
+    backgroundColor: Colors.white,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(20),
+      side: BorderSide(
+        color: isAnyDateSelected 
+            ? IncidentReportConstants.colorScheme['primary']!
+            : Colors.grey.shade300,
+        width: isAnyDateSelected ? 0 : 1.5,
+      ),
+    ),
+    elevation: isAnyDateSelected ? 2 : 0,
+    shadowColor: IncidentReportConstants.colorScheme['primary']!.withOpacity(0.3),
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    labelStyle: TextStyle(
+      color: isAnyDateSelected ? Colors.white : Colors.black87,
+    ),
+  );
+}
 
   Widget _buildBatchActions() {
     return AnimatedContainer(
@@ -1081,9 +1285,9 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
         final Map<String, List<Map<String, dynamic>>> groupedDocs = {};
         if (_selectedFilter == 'all') {
           for (final doc in filteredDocs) {
-            final timestamp = doc['timestamp'];
+            final timestamp = _safeParseDateTime(doc['timestamp']);
             final dateKey = timestamp != null
-                ? DateFormat('yyyy-MM-dd').format(DateTime.parse(timestamp))
+                ? DateFormat('yyyy-MM-dd').format(timestamp)
                 : 'Unknown Date';
             
             if (!groupedDocs.containsKey(dateKey)) {
@@ -1151,7 +1355,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
                   isSelected: _selectedIncidents.contains(doc['id'].toString()),
                   onSelect: () => _selectIncident(doc['id'].toString()),
                   onDelete: () => _deleteIncident(doc['id'].toString()),
-                  showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
+                  showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'moderator',
                 ),
               );
             }
@@ -1265,7 +1469,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
             isSelected: _selectedIncidents.contains(doc['id'].toString()),
             onSelect: () => _selectIncident(doc['id'].toString()),
             onDelete: () => _deleteIncident(doc['id'].toString()),
-            showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'admin',
+            showDeleteButton: _selectedFilter == 'all' && widget.userRole == 'moderator',
           ),
         );
       },
@@ -1326,76 +1530,337 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     );
   }
 
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.search_off_rounded,
-              size: 64, color: IncidentReportConstants.colorScheme['primary']),
-          const SizedBox(height: 16),
-          const Text(
-            'No incidents found',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+ Widget _buildEmptyState() {
+  return Center(
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(Icons.search_off_rounded,
+            size: 64, color: IncidentReportConstants.colorScheme['primary']),
+        const SizedBox(height: 16),
+        const Text(
+          'No incidents found',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Try adjusting your search or filters',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.black),
+        ),
+        const SizedBox(height: 16),
+        ElevatedButton(
+          onPressed: () {
+            setState(() {
+              _searchQuery = '';
+              _searchController.clear();
+              _selectedDate = null;
+              _selectedDateRange = null; // Add this
+            });
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: IncidentReportConstants.colorScheme['primary'],
           ),
-          const SizedBox(height: 8),
-          const Text(
-            'Try adjusting your search or filters',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.black),
-          ),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: () {
-              setState(() {
-                _searchQuery = '';
-                _searchController.clear();
-                _selectedDate = null;
-              });
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: IncidentReportConstants.colorScheme['primary'],
-            ),
-            child: const Text('Clear Filters', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
+          child: const Text('Clear Filters', style: TextStyle(color: Colors.white)),
+        ),
+      ],
+    ),
+  );
+}
 
-  List<Map<String, dynamic>> _filterEmergencies(List<Map<String, dynamic>> docs) {
+List<Map<String, dynamic>> _filterEmergencies(List<Map<String, dynamic>> docs) {
+  // For "Spam Reports" - enhanced spam detection with multiple layers
+  if (_selectedFilter == 'spam') {
     final now = DateTime.now();
-    final startOfToday = DateTime(now.year, now.month, now.day);
     
     return docs.where((doc) {
+      final description = (doc['description'] ?? '').toString().toLowerCase();
+      final contactNumber = (doc['contact_number'] ?? '').toString();
+      final name = (doc['name'] ?? '').toString().toLowerCase();
+      final incidentType = (doc['incident_type'] ?? '').toString().toLowerCase();
+      final timestamp = doc['timestamp'];
+      final address = (doc['address'] ?? '').toString().toLowerCase();
+      final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
+      
+      int spamScore = 0;
+      List<String> spamReasons = [];
+
+      // Layer 1: Content-based spam detection
+      final spamPatterns = IncidentReportConstants.spamPatterns;
+      for (final pattern in spamPatterns) {
+        if (description.contains(pattern)) {
+          spamScore += 3; // High score for spam keywords
+          spamReasons.add('Contains spam keyword: "$pattern"');
+          break; // One spam keyword is enough
+        }
+      }
+
+      // Layer 2: Suspicious incident type detection with misspellings
+      final suspiciousTypes = IncidentReportConstants.suspiciousIncidentTypes;
+      bool hasSuspiciousType = false;
+      
+      for (final suspiciousType in suspiciousTypes) {
+        if (incidentType.contains(suspiciousType)) {
+          spamScore += 3; // High score for suspicious incident types
+          spamReasons.add('Suspicious incident type: "$suspiciousType"');
+          hasSuspiciousType = true;
+          break;
+        }
+      }
+
+      // Layer 3: Fuzzy matching for misspelled incident types
+      if (!hasSuspiciousType && incidentType.isNotEmpty) {
+        // Check for common misspelling patterns
+        final misspellingPatterns = [
+          RegExp(r't[e]?st'), // test, tst
+          RegExp(r'dem[o]?o?'), // demo, demoo
+          RegExp(r'samp[le]?l?'), // sample, sampel
+          RegExp(r'fak[e]?'), // fake, fak
+          RegExp(r'spam[m]?'), // spam, spamm
+          RegExp(r'un[k]?now[n]?'), // unknown, unknow
+          RegExp(r'misc[elaneous]?'), // miscellaneous, misc
+          RegExp(r'ch[e]?ck'), // check, chek
+          RegExp(r'verif[y]?'), // verify, verif
+          RegExp(r'tr[i]?al'), // trial, trail
+          RegExp(r'exp[e]?r[i]?ment'), // experiment, expirement
+          RegExp(r'practic[e]?s?'), // practice, practise
+          RegExp(r'dum[m]?y'), // dummy, dumy
+          RegExp(r'bog[u]?s'), // bogus, bogous
+        ];
+        
+        for (final pattern in misspellingPatterns) {
+          if (pattern.hasMatch(incidentType)) {
+            spamScore += 2; // Medium score for misspelled suspicious types
+            spamReasons.add('Misspelled suspicious incident type: "$incidentType"');
+            break;
+          }
+        }
+      }
+
+      // Layer 4: Suspicious name patterns
+      final suspiciousNames = ['test', 'demo', 'user', 'admin', 'unknown', 'anonymous', 'tester'];
+      for (final suspiciousName in suspiciousNames) {
+        if (name == suspiciousName) {
+          spamScore += 2;
+          spamReasons.add('Suspicious name: "$suspiciousName"');
+          break;
+        }
+      }
+
+      // Layer 5: Contact number analysis
+      if (contactNumber.length < 5 || 
+          contactNumber == '0000000000' || 
+          contactNumber == '1234567890' ||
+          contactNumber == '1111111111' ||
+          contactNumber.contains('123') && contactNumber.length <= 6) {
+        spamScore += 3;
+        spamReasons.add('Invalid/suspicious contact number');
+      }
+
+      // Layer 6: Frequency analysis from same contact number
+      final incidentsFromSameContact = docs.where((otherDoc) {
+        return otherDoc['contact_number'] == contactNumber;
+      }).length;
+      
+      if (incidentsFromSameContact >= 3) {
+        spamScore += 2;
+        spamReasons.add('Multiple reports from same number ($incidentsFromSameContact)');
+      }
+
+      // Layer 7: Time-based analysis (multiple reports in short time)
+      if (timestamp != null) {
+        try {
+          final incidentTime = DateTime.parse(timestamp);
+          final timeDiff = now.difference(incidentTime);
+          
+          // Check for multiple reports within last 30 minutes
+          final recentIncidents = docs.where((otherDoc) {
+            if (otherDoc['contact_number'] != contactNumber) return false;
+            final otherTimestamp = otherDoc['timestamp'];
+            if (otherTimestamp == null) return false;
+            try {
+              final otherTime = DateTime.parse(otherTimestamp);
+              return now.difference(otherTime) <= const Duration(minutes: 30);
+            } catch (e) {
+              return false;
+            }
+          }).length;
+          
+          if (recentIncidents >= 2) {
+            spamScore += 3;
+            spamReasons.add('Multiple reports in last 30 minutes ($recentIncidents)');
+          }
+        } catch (e) {
+          debugPrint('Error parsing timestamp for spam analysis: $e');
+        }
+      }
+
+      // Layer 8: Description length and pattern analysis
+      if (description.length < 10) {
+        spamScore += 1;
+        spamReasons.add('Very short description');
+      } else if (description.length > 500) {
+        spamScore += 1;
+        spamReasons.add('Excessively long description');
+      }
+
+      // Layer 9: Repeated content detection
+      final words = description.split(' ');
+      final uniqueWords = Set<String>.from(words);
+      final repetitionRatio = uniqueWords.length / (words.length > 0 ? words.length : 1);
+      if (repetitionRatio < 0.3 && words.length > 20) {
+        spamScore += 2;
+        spamReasons.add('High content repetition detected');
+      }
+
+      // Layer 10: URL and link detection (beyond basic patterns)
+      final urlRegex = RegExp(r'((https?://|www\.)[^\s]+)');
+      if (urlRegex.hasMatch(description)) {
+        spamScore += 3;
+        spamReasons.add('Contains URLs/links');
+      }
+
+      // Layer 11: Special character analysis
+      final specialCharRegex = RegExp(r'[!@#$%^&*(),?":{}|<>]');
+      final specialCharCount = specialCharRegex.allMatches(description).length;
+      if (specialCharCount > 10) {
+        spamScore += 1;
+        spamReasons.add('Excessive special characters');
+      }
+
+      // Layer 12: ALL CAPS detection
+      final upperCaseRatio = description.replaceAll(RegExp(r'[^A-Z]'), '').length / (description.length > 0 ? description.length : 1);
+      if (upperCaseRatio > 0.7 && description.length > 20) {
+        spamScore += 1;
+        spamReasons.add('Excessive uppercase text');
+      }
+
+      // Layer 13: Suspicious location patterns
+      final suspiciousLocations = ['test', 'demo', 'unknown', 'none', 'na', 'home', 'office', 'street'];
+      for (final suspiciousLocation in suspiciousLocations) {
+        if (address.contains(suspiciousLocation) || landmark.contains(suspiciousLocation)) {
+          spamScore += 1;
+          spamReasons.add('Suspicious location/landmark');
+          break;
+        }
+      }
+
+      // Final decision with threshold
+      final isSpam = spamScore >= 5; // Threshold for spam classification
+      
+      if (isSpam) {
+        debugPrint('🚫 SPAM DETECTED - Score: $spamScore - Reasons: ${spamReasons.join(", ")}');
+        debugPrint('   Contact: $contactNumber, Type: $incidentType, Description: ${description.length} chars');
+      }
+
+      return isSpam;
+    }).where((doc) {
+      // Apply search filter to spam results
       final location = (doc['address'] ?? '').toString().toLowerCase();
       final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
       final type = (doc['incident_type'] ?? '').toString().toLowerCase();
-      final timestamp = doc['timestamp'];
       
-      // Apply time filter
-      if (_selectedFilter == 'recent' && timestamp != null) {
-        final reportTime = DateTime.parse(timestamp);
-        if (reportTime.isBefore(startOfToday)) {
-          return false;
-        }
-      }
-      
-      // Apply date filter if selected
-      if (_selectedDate != null && timestamp != null) {
-        final reportDate = DateTime.parse(timestamp);
-        if (!DateUtils.isSameDay(reportDate, _selectedDate)) {
-          return false;
-        }
-      }
-      
-      // Apply search filter
       return _searchQuery.isEmpty ||
           location.contains(_searchQuery) ||
           landmark.contains(_searchQuery) ||
           type.contains(_searchQuery);
     }).toList();
   }
+
+  // For "All Reports" with no date selected - show EVERYTHING
+  if (_selectedFilter == 'all' && _selectedDate == null && _selectedDateRange == null) {
+    return docs.where((doc) {
+      final location = (doc['address'] ?? '').toString().toLowerCase();
+      final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
+      final type = (doc['incident_type'] ?? '').toString().toLowerCase();
+      
+      // Apply search filter only - NO date or status filtering
+      return _searchQuery.isEmpty ||
+          location.contains(_searchQuery) ||
+          landmark.contains(_searchQuery) ||
+          type.contains(_searchQuery);
+    }).toList();
+  }
+
+  final now = DateTime.now();
+  DateTime start, end;
+
+  // Define date range for filtered views
+  if (_selectedFilter == 'recent') {
+    // "Recent" view - today only
+    start = DateTime(now.year, now.month, now.day);
+    end = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
+  } else if (_selectedFilter == 'all' && _selectedDateRange != null) {
+    // "All Reports" with date range selected
+    start = DateTime(
+      _selectedDateRange!.start.year,
+      _selectedDateRange!.start.month,
+      _selectedDateRange!.start.day,
+    );
+    end = DateTime(
+      _selectedDateRange!.end.year,
+      _selectedDateRange!.end.month,
+      _selectedDateRange!.end.day,
+      23, 59, 59, 999,
+    );
+  } else if (_selectedFilter == 'all' && _selectedDate != null) {
+    // "All Reports" with single date selected (backward compatibility)
+    start = DateTime(
+      _selectedDate!.year,
+      _selectedDate!.month,
+      _selectedDate!.day,
+    );
+    end = DateTime(
+      _selectedDate!.year,
+      _selectedDate!.month,
+      _selectedDate!.day,
+      23, 59, 59, 999,
+    );
+  } else {
+    // This shouldn't happen, but return all as fallback
+    return docs;
+  }
+
+  // Filter by date for "Recent" and "All Reports with date selected"
+  final dateFiltered = docs.where((incident) {
+    final timestamp = incident['timestamp'];
+    if (timestamp == null) return false;
+    
+    try {
+      final incidentDate = DateTime.parse(timestamp);
+      return incidentDate.isAfter(start.subtract(const Duration(seconds: 1))) && 
+            incidentDate.isBefore(end.add(const Duration(seconds: 1)));
+    } catch (e) {
+      debugPrint('Error parsing timestamp: $e');
+      return false;
+    }
+  }).toList();
+
+  // Apply status filtering ONLY for "Recent" view - filter out resolved and declined
+  final statusFiltered = _selectedFilter == 'recent' 
+      ? dateFiltered.where((incident) {
+          final status = (incident['latest_status'] ?? incident['status'] ?? 'pending').toString().toLowerCase();
+          return status != 'resolved' && status != 'declined';
+        }).toList()
+      : dateFiltered; // "All Reports" shows ALL statuses
+
+  // Apply search filter
+  final searchFiltered = statusFiltered.where((doc) {
+    final location = (doc['address'] ?? '').toString().toLowerCase();
+    final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
+    final type = (doc['incident_type'] ?? '').toString().toLowerCase();
+
+    return _searchQuery.isEmpty ||
+        location.contains(_searchQuery) ||
+        landmark.contains(_searchQuery) ||
+        type.contains(_searchQuery);
+  }).toList();
+
+  debugPrint('🔍 IncidentReportScreen filtered ${docs.length} → ${searchFiltered.length} incidents');
+  debugPrint('📅 Filter: $_selectedFilter - Date: ${_selectedDateRange != null ? "Range ${DateFormat('MMM d').format(_selectedDateRange!.start)} to ${DateFormat('MMM d').format(_selectedDateRange!.end)}" : _selectedDate != null ? "Single date" : "All"} - Status filter: ${_selectedFilter == 'recent' ? "Active only" : "All statuses"} - Spam filter: ${_selectedFilter == 'spam' ? "Spam only" : "All"}');
+  
+  return searchFiltered;
+}
 
   void _showEmergencyDetails(Map<String, dynamic> doc) {
     final incident = IncidentData.fromMap(doc, doc['id'].toString());
@@ -1513,18 +1978,45 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
 
   Future<void> _refreshData() async {
     setState(() {
-      _isLoading = true;
       _hasNewUpdates = false;
     });
 
-    // Force refresh by re-subscribing to streams
-    _setupRealTimeSubscriptions();
-
-    await Future.delayed(const Duration(seconds: 1));
-
-    setState(() {
-      _isLoading = false;
-    });
+    try {
+      // Clear current data and re-subscribe to get fresh data
+      _incidentsMap.clear();
+      
+      // Cancel existing subscriptions
+      _incidentsSubscription?.cancel();
+      _statusUpdatesSubscription?.cancel();
+      
+      // Re-subscribe to streams
+      _setupRealTimeSubscriptions();
+      
+      // Show loading state for a moment
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Data refreshed'),
+            backgroundColor: IncidentReportConstants.colorScheme['success'],
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error refreshing data: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Refresh failed: $e'),
+            backgroundColor: IncidentReportConstants.colorScheme['error'],
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
   }
 }
 
@@ -1554,13 +2046,13 @@ class IncidentCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final incidentStyle = StyleService.getIncidentStyle(incident.incidentType);
-    final statusStyle = StyleService.getStatusStyle(incident.status);
+    final statusStyle = StyleService.getStatusStyle(incident.effectiveStatus);
     final hasImages = incident.imageUrls.isNotEmpty;
 
     return InkWell(
       borderRadius: BorderRadius.circular(16),
       onTap: isSelectable ? onSelect : onTap,
-      onLongPress: userRole == 'admin' ? onSelect : null,
+      onLongPress: userRole == 'moderator' ? onSelect : null,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.all(16),
@@ -1671,7 +2163,7 @@ class IncidentCard extends StatelessWidget {
                 ],
                 Text(
                   incident.timestamp != null
-                      ? DateFormat('MMM d, h:mm a').format(incident.timestamp!)
+                      ? DateFormat('MMM d, h:mm a').format(incident.timestamp!.toLocal())
                       : 'Unknown time',
                   style: TextStyle(
                     fontSize: 12,
@@ -1680,8 +2172,7 @@ class IncidentCard extends StatelessWidget {
                 ),
               ],
             ),
-
-            if (userRole == 'admin') ...[
+            if (userRole == 'moderator') ...[
               const SizedBox(height: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -1784,7 +2275,7 @@ class IncidentCard extends StatelessWidget {
               child: Text(
                 "Delete",
                 style: TextStyle(color: IncidentReportConstants.colorScheme['error']),
-              ),
+                ),
             ),
           ],
         );
@@ -1816,7 +2307,6 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
   late String _selectedStatus;
   final TextEditingController _noteController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
-  final Map<String, Uint8List?> _imageCache = {};
   List<StatusUpdate> _statusUpdates = [];
   bool _loadingStatusUpdates = false;
   bool _updatingStatus = false;
@@ -1824,7 +2314,7 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
   @override
   void initState() {
     super.initState();
-    _selectedStatus = widget.incident.status;
+    _selectedStatus = widget.incident.effectiveStatus;
     _loadStatusUpdates();
   }
 
@@ -2097,13 +2587,13 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
             title: 'Landmark',
             content: widget.incident.landmark!,
           ),
-        _buildDetailSection(
-          icon: Icons.access_time_rounded,
-          title: 'Reported',
-          content: widget.incident.timestamp != null
-              ? DateFormat('MMMM d, y - h:mm a').format(widget.incident.timestamp!)
-              : 'Unknown time',
-        ),
+          _buildDetailSection(
+            icon: Icons.access_time_rounded,
+            title: 'Reported',
+            content: widget.incident.timestamp != null
+                ? DateFormat('MMMM d, yyyy - h:mm a').format(widget.incident.timestamp!.toLocal())
+                : 'Unknown time',
+          ),
         if (widget.incident.contactNumber != null)
           _buildDetailSection(
             icon: Icons.phone_rounded,
@@ -2255,7 +2745,7 @@ Widget _buildStatusTimeline() {
   
   // Add the initial pending status if it's not in the updates
   final hasInitialPending = _statusUpdates.any((update) => update.status == 'pending');
-  if (!hasInitialPending && widget.incident.status == 'pending') {
+  if (!hasInitialPending && widget.incident.effectiveStatus == 'pending') {
     allStatusUpdates.add(
       StatusUpdate(
         id: 'initial',
@@ -2386,7 +2876,7 @@ Widget _buildStatusTimeline() {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      DateFormat('MMM d, h:mm a').format(update.createdAt),
+                      DateFormat('MMM d, h:mm a').format(update.createdAt.toLocal()),
                       style: TextStyle(
                         color: Colors.grey[600],
                         fontSize: 12,
@@ -2404,7 +2894,7 @@ Widget _buildStatusTimeline() {
 }
 
   Widget _buildStatusSection() {
-    if (widget.userRole == 'admin') {
+    if (widget.userRole == 'moderator') {
       return _buildAdminStatusSection();
     } else {
       return _buildUserStatusSection();
@@ -2417,7 +2907,7 @@ Widget _buildAdminStatusSection() {
   
   // Validate and set default if current selection is invalid
   if (!availableStatusOptions.contains(_selectedStatus)) {
-    _selectedStatus = widget.incident.status;
+    _selectedStatus = widget.incident.effectiveStatus;
     // If incident status is also invalid, fall back to first option
     if (!availableStatusOptions.contains(_selectedStatus)) {
       _selectedStatus = availableStatusOptions.first;
@@ -2461,7 +2951,7 @@ Widget _buildAdminStatusSection() {
         ),
         const SizedBox(height: 16),
         DropdownButtonFormField<String>(
-          value: _selectedStatus,
+          initialValue: _selectedStatus,
           items: dropdownItems,
           onChanged: _updatingStatus ? null : (String? newValue) {
             if (newValue != null) {
@@ -2579,7 +3069,7 @@ Widget _buildAdminStatusSection() {
   }
 
   Widget _buildUserStatusSection() {
-    final statusStyle = StyleService.getStatusStyle(widget.incident.status);
+    final statusStyle = StyleService.getStatusStyle(widget.incident.effectiveStatus);
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -2642,7 +3132,7 @@ Widget _buildAdminStatusSection() {
           widget.incident.id,
           status: _selectedStatus,
           note: note,
-          updatedBy: 'Admin',
+          updatedBy: 'Moderator',
         );
 
         // Reload status updates to show the new one

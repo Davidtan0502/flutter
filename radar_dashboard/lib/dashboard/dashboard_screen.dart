@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:radar_dashboard/dashboard/admin%20panel%20screen/admin_management_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:radar_dashboard/components/involved_barangay.dart';
 import 'package:radar_dashboard/components/report_table.dart';
 import 'package:radar_dashboard/components/map_monitoring.dart';
 import 'package:radar_dashboard/components/weather_monitoring.dart';
 import 'package:radar_dashboard/components/monthly_incident_report.dart';
-import 'package:radar_dashboard/login/admin/admin_panel_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final VoidCallback onMenuPressed;
@@ -336,7 +336,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           onPressed: () {
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => const AdminPanelScreen()),
+              MaterialPageRoute(builder: (context) => const AdminManagementScreen()),
             );
           },
         );

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:animations/animations.dart';
-import 'package:supabase_flutter/supabase_flutter.dart'; // Add this import
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:radar_dashboard/dashboard/dashboard_screen.dart';
 import 'package:radar_dashboard/screens/analytics_screen.dart';
 import 'package:radar_dashboard/screens/incidents/incident_report_screen.dart';
@@ -8,6 +8,7 @@ import 'package:radar_dashboard/screens/mapping_screen.dart';
 import 'package:radar_dashboard/screens/settings_screen.dart';
 import 'package:radar_dashboard/login/login_register_screen.dart';
 import 'package:radar_dashboard/notifications/notification_screen.dart';
+import 'package:radar_dashboard/dashboard/admin%20panel%20screen/admin_management_screen.dart';
 
 class NavigationScreen extends StatefulWidget {
   final bool isDarkMode;
@@ -28,9 +29,10 @@ class NavigationScreen extends StatefulWidget {
 class _NavigationScreenState extends State<NavigationScreen>
     with TickerProviderStateMixin {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-  final SupabaseClient _supabase = Supabase.instance.client; // Add Supabase client
+  final SupabaseClient _supabase = Supabase.instance.client;
   int _selectedIndex = 0;
   int _previousIndex = 0;
+  String _userName = 'Loading...';
 
   late final List<NavigationItem> _navigationItems;
   final Map<int, Widget> _screenCache = {};
@@ -38,7 +40,51 @@ class _NavigationScreenState extends State<NavigationScreen>
   @override
   void initState() {
     super.initState();
+    _fetchUserName();
+    _initializeNavigationItems();
+  }
 
+  Future<void> _fetchUserName() async {
+    try {
+      final user = _supabase.auth.currentUser;
+      if (user != null) {
+        // Fetch user profile from your profiles table
+        final response = await _supabase
+            .from('profiles')
+            .select('full_name')
+            .eq('id', user.id)
+            .single();
+
+        // For newer Supabase versions, response is the data directly
+        if (response != null) {
+          final String? fullName = response['full_name'];
+          if (mounted) {
+            setState(() {
+              _userName = fullName ?? user.email?.split('@').first ?? 'User';
+            });
+          }
+        } else {
+          // Fallback to email username if profile not found
+          if (mounted) {
+            setState(() {
+              _userName = user.email?.split('@').first ?? 'User';
+            });
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error fetching user name: $e');
+      // Fallback to email username
+      final user = _supabase.auth.currentUser;
+      if (mounted) {
+        setState(() {
+          _userName = user?.email?.split('@').first ?? 'User';
+        });
+      }
+    }
+  }
+
+  void _initializeNavigationItems() {
     // All navigation items
     final allItems = [
       NavigationItem(
@@ -68,13 +114,21 @@ class _NavigationScreenState extends State<NavigationScreen>
         screenBuilder: (onMenuPressed) =>
             AnalyticsScreen(onMenuPressed: onMenuPressed),
       ),
-      // Add Notifications screen for admin only
+      // Add Notifications screen for admin and moderator
+      NavigationItem(
+        title: 'Notifications',
+        icon: Icons.notifications_rounded,
+        screenBuilder: (onMenuPressed) =>
+            NotificationScreen(onMenuPressed: onMenuPressed),
+      ),
+      // Add Admin Panel only for admin role
       if (widget.userRole == 'admin')
         NavigationItem(
-          title: 'Notifications',
-          icon: Icons.notifications_rounded,
-          screenBuilder: (onMenuPressed) =>
-              NotificationScreen(onMenuPressed: onMenuPressed),
+          title: 'Admin Panel',
+          icon: Icons.admin_panel_settings_rounded,
+          screenBuilder: (onMenuPressed) => AdminManagementScreen(
+            onMenuPressed: onMenuPressed,
+          ),
         ),
       NavigationItem(
         title: 'Settings',
@@ -88,14 +142,18 @@ class _NavigationScreenState extends State<NavigationScreen>
     ];
 
     // Filter based on role
-    if (widget.userRole == 'admin') {
+    if (widget.userRole == 'moderator') {
+      // Moderator gets all items except Admin Panel
+      _navigationItems = allItems.where((item) => item.title != 'Admin Panel').toList();
+    } else if (widget.userRole == 'admin') {
+      // Admin gets all items
       _navigationItems = allItems;
     } else {
+      // User gets limited items
       _navigationItems = allItems
           .where((item) =>
               item.title == 'Dashboard' ||
               item.title == 'Incident Reports' ||
-              item.title == 'Analytics' ||
               item.title == 'Settings')
           .toList();
     }
@@ -115,8 +173,6 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
     return Scaffold(
       key: _scaffoldKey,
       drawer: _buildAppDrawer(),
@@ -159,7 +215,7 @@ class _NavigationScreenState extends State<NavigationScreen>
         removeTop: true,
         child: Column(
           children: [
-            _buildDrawerHeader(colorScheme),
+            _buildDrawerHeader(),
             Expanded(
               child: Container(
                 decoration: BoxDecoration(
@@ -174,9 +230,10 @@ class _NavigationScreenState extends State<NavigationScreen>
                         .asMap()
                         .entries
                         .map((entry) =>
-                            _buildDrawerItem(entry.value, entry.key, colorScheme)),
+                            _buildDrawerItem(entry.value, entry.key)),
                     const Divider(height: 32, thickness: 1),
-                    _buildSignOutTile(colorScheme),
+                    _buildUserInfoTile(),
+                    _buildSignOutTile(),
                   ],
                 ),
               ),
@@ -187,7 +244,7 @@ class _NavigationScreenState extends State<NavigationScreen>
     );
   }
 
-  Widget _buildDrawerHeader(ColorScheme colorScheme) {
+  Widget _buildDrawerHeader() {
     return Material(
       color: Colors.transparent,
       clipBehavior: Clip.antiAlias,
@@ -219,7 +276,7 @@ class _NavigationScreenState extends State<NavigationScreen>
                 shadows: [
                   Shadow(
                     blurRadius: 5,
-                    color: Colors.black.withOpacity(0.35),
+                    color: Colors.black.withAlpha(89), // 0.35 opacity
                     offset: const Offset(1, 1),
                   ),
                 ],
@@ -229,7 +286,7 @@ class _NavigationScreenState extends State<NavigationScreen>
             Text(
               'Emergency Response System',
               style: TextStyle(
-                color: Colors.white.withOpacity(0.9),
+                color: Colors.white.withAlpha(229), // 0.9 opacity equivalent
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
               ),
@@ -239,7 +296,7 @@ class _NavigationScreenState extends State<NavigationScreen>
               padding:
                   const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.25),
+                color: Colors.white.withAlpha(64), // 0.25 opacity equivalent
                 borderRadius: BorderRadius.circular(24),
               ),
               child: Text(
@@ -258,15 +315,15 @@ class _NavigationScreenState extends State<NavigationScreen>
     );
   }
 
-  Widget _buildDrawerItem(
-      NavigationItem item, int index, ColorScheme colorScheme) {
+  Widget _buildDrawerItem(NavigationItem item, int index) {
+    final colorScheme = Theme.of(context).colorScheme;
     final isSelected = index == _selectedIndex;
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       decoration: BoxDecoration(
         color: isSelected
-            ? colorScheme.primary.withOpacity(0.1)
+            ? colorScheme.primary.withAlpha(25) // 0.1 opacity equivalent
             : Colors.transparent,
         borderRadius: BorderRadius.circular(12),
       ),
@@ -275,7 +332,7 @@ class _NavigationScreenState extends State<NavigationScreen>
           item.icon,
           color: isSelected
               ? colorScheme.primary
-              : colorScheme.onSurface.withOpacity(0.7),
+              : colorScheme.onSurface.withAlpha(178), // 0.7 opacity equivalent
           size: 24,
         ),
         title: Text(
@@ -287,14 +344,72 @@ class _NavigationScreenState extends State<NavigationScreen>
           ),
         ),
         selected: isSelected,
-        hoverColor: colorScheme.primary.withOpacity(0.05),
+        hoverColor: colorScheme.primary.withAlpha(12), // 0.05 opacity equivalent
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         onTap: () => _handleDrawerItemTap(item, index),
       ),
     );
   }
 
-  Widget _buildSignOutTile(ColorScheme colorScheme) {
+  Widget _buildUserInfoTile() {
+    final colorScheme = Theme.of(context).colorScheme;
+    
+    // Get role display name
+    String roleDisplay;
+    switch (widget.userRole) {
+      case 'admin':
+        roleDisplay = 'Administrator';
+        break;
+      case 'moderator':
+        roleDisplay = 'Moderator';
+        break;
+      case 'user':
+        roleDisplay = 'User';
+        break;
+      default:
+        roleDisplay = 'User';
+    }
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: ListTile(
+        leading: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: colorScheme.primary.withAlpha(25), // 0.1 opacity equivalent
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            Icons.person_rounded,
+            color: colorScheme.primary,
+            size: 20,
+          ),
+        ),
+        title: Text(
+          _userName,
+          style: TextStyle(
+            color: colorScheme.onSurface,
+            fontWeight: FontWeight.w600,
+            fontSize: 14,
+          ),
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          roleDisplay,
+          style: TextStyle(
+            color: colorScheme.onSurface.withAlpha(178), // 0.7 opacity equivalent
+            fontSize: 12,
+          ),
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+  }
+
+  Widget _buildSignOutTile() {
+    final colorScheme = Theme.of(context).colorScheme;
+    
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       child: ListTile(
@@ -355,7 +470,7 @@ class _NavigationScreenState extends State<NavigationScreen>
         // Use Supabase signOut instead of Firebase
         await _supabase.auth.signOut();
         
-        if (context.mounted) {
+        if (mounted) {
           Navigator.pushAndRemoveUntil(
             context,
             MaterialPageRoute(builder: (context) => const LoginRegisterScreen()),
@@ -365,7 +480,7 @@ class _NavigationScreenState extends State<NavigationScreen>
       } catch (e) {
         debugPrint('Sign out error: $e');
         // Even if there's an error, navigate to login screen
-        if (context.mounted) {
+        if (mounted) {
           Navigator.pushAndRemoveUntil(
             context,
             MaterialPageRoute(builder: (context) => const LoginRegisterScreen()),

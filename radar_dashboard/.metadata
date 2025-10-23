@@ -4,7 +4,7 @@
 # This file should be version controlled and should not be manually edited.
 
 version:
-  revision: "a402d9a4376add5bc2d6b1e33e53edaae58c07f8"
+  revision: "356908f9dd75997d9e0bb73e6472d4ac10aa80db"
   channel: "stable"
 
 project_type: app
@@ -13,11 +13,11 @@ project_type: app
 migration:
   platforms:
     - platform: root
-      create_revision: a402d9a4376add5bc2d6b1e33e53edaae58c07f8
-      base_revision: a402d9a4376add5bc2d6b1e33e53edaae58c07f8
+      create_revision: 356908f9dd75997d9e0bb73e6472d4ac10aa80db
+      base_revision: 356908f9dd75997d9e0bb73e6472d4ac10aa80db
     - platform: windows
-      create_revision: a402d9a4376add5bc2d6b1e33e53edaae58c07f8
-      base_revision: a402d9a4376add5bc2d6b1e33e53edaae58c07f8
+      create_revision: 356908f9dd75997d9e0bb73e6472d4ac10aa80db
+      base_revision: 356908f9dd75997d9e0bb73e6472d4ac10aa80db
 
   # User provided section
 

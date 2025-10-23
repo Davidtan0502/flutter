@@ -51,81 +51,81 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.dispose();
   }
 
-  Future<void> _pickAndUploadImage(ImageSource source) async {
-    try {
-      final XFile? pickedFile = await _picker.pickImage(
-        source: source, 
-        imageQuality: 85,
-        maxWidth: 800,
-      );
+Future<void> _pickAndUploadImage(ImageSource source) async {
+  try {
+    final XFile? pickedFile = await _picker.pickImage(
+      source: source, 
+      imageQuality: 85,
+      maxWidth: 800,
+    );
 
-      if (pickedFile != null) {
-        setState(() => _isUploading = true);
+    if (pickedFile != null) {
+      setState(() => _isUploading = true);
 
-        final user = _supabase.auth.currentUser;
-        if (user == null) return;
+      final user = _supabase.auth.currentUser;
+      if (user == null) return;
 
-        final file = File(pickedFile.path);
-        final fileBytes = await file.readAsBytes();
-        final fileName = '${user.id}_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final file = File(pickedFile.path);
+      final fileBytes = await file.readAsBytes();
+      final fileName = '${user.id}_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
-        // Upload to Supabase Storage - fixed the file upload issue
-        final uploadResponse = await _supabase.storage
-            .from('profile_pictures')
-            .uploadBinary(
-              fileName, 
-              fileBytes, 
-              fileOptions: const FileOptions(
-                upsert: true,
-                contentType: 'image/jpeg',
-              ),
-            );
-
-        // Get public URL
-        final publicUrlResponse = _supabase.storage
-            .from('profile_pictures')
-            .getPublicUrl(fileName);
-
-        // Update user profile in database
-        await _supabase
-            .from('dashboard_users')
-            .update({
-              'personal_details': {
-                'profilePicture': publicUrlResponse,
-                'lastUpdated': DateTime.now().toIso8601String(),
-              }
-            })
-            .eq('id', user.id);
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text("Profile picture updated successfully!"),
-              backgroundColor: _accentColor,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      // Upload to Supabase Storage - FIXED VERSION
+      await _supabase.storage
+          .from('dashboard_pictures')
+          .upload(
+            fileName, 
+            fileBytes as File,
+            fileOptions: FileOptions(
+              upsert: true,
+              contentType: 'image/jpeg',
             ),
           );
-        }
-      }
-    } catch (e) {
-      debugPrint("Error uploading profile picture: $e");
+
+      // Get public URL
+      final publicUrl = _supabase.storage
+          .from('dashboard_pictures')
+          .getPublicUrl(fileName);
+
+      // Update user profile in database
+      await _supabase
+          .from('dashboard_users')
+          .update({
+            'personal_details': {
+              'profilePicture': publicUrl,
+              'lastUpdated': DateTime.now().toIso8601String(),
+            }
+          })
+          .eq('id', user.id);
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: const Text("Failed to upload image. Please try again."),
-            backgroundColor: _errorColor,
+            content: const Text("Profile picture updated successfully!"),
+            backgroundColor: _accentColor,
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
         );
       }
-    } finally {
-      if (mounted) {
-        setState(() => _isUploading = false);
-      }
+    }
+  } catch (e) {
+    debugPrint("Error uploading profile picture: $e");
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Failed to upload image: ${e.toString()}"),
+          backgroundColor: _errorColor,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+    }
+  } finally {
+    if (mounted) {
+      setState(() => _isUploading = false);
     }
   }
+}
 
   Future<void> _updateProfileInfo() async {
     if (!_formKey.currentState!.validate()) return;
