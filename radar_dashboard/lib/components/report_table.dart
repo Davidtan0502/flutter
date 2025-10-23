@@ -345,7 +345,9 @@ List<Map<String, dynamic>> _getFilteredIncidents() {
       23, 59, 59, 999,
     );
   } else {
-    start = DateTime(now.year, now.month, now.day);
+    // For "Today" view, use local date
+    final today = DateTime(now.year, now.month, now.day);
+    start = today;
     end = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
   }
 
@@ -355,10 +357,11 @@ List<Map<String, dynamic>> _getFilteredIncidents() {
     if (timestamp == null) return false;
     
     try {
-      final incidentDate = DateTime.parse(timestamp);
+      final incidentDate = DateTime.parse(timestamp).toLocal();
       return incidentDate.isAfter(start.subtract(const Duration(seconds: 1))) && 
              incidentDate.isBefore(end.add(const Duration(seconds: 1)));
     } catch (e) {
+      debugPrint('Error parsing timestamp: $e');
       return false;
     }
   }).toList();
@@ -411,27 +414,29 @@ Widget build(BuildContext context) {
           ? DateFormat('MMM d, yyyy').format(widget.dateRange!.start)
           : '${DateFormat('MMM d, yyyy').format(widget.dateRange!.start)} - ${DateFormat('MMM d, yyyy').format(widget.dateRange!.end)}';
 
-  final today = DateTime.now();
-  final yesterday = today.subtract(const Duration(days: 1));
-  int resolvedToday = 0;
-  int resolvedYesterday = 0;
+  // In the build method, replace the resolved stats calculation:
+          final today = DateTime.now();
+          final yesterday = today.subtract(const Duration(days: 1));
+          int resolvedToday = 0;
+          int resolvedYesterday = 0;
 
-  // Calculate resolved stats from ALL incidents (not filtered)
-  for (var doc in _displayedIncidents) {
-    final status = (doc['latest_status'] ?? doc['status'] ?? 'pending').toString().toLowerCase();
-    if (status == 'resolved') {
-      final resolvedAt = doc['resolvedAt'] as String?;
-      final ts = resolvedAt ?? doc['timestamp'] as String?;
-      if (ts != null) {
-        final d = DateTime.parse(ts);
-        if (_isSameDay(d, today)) resolvedToday++;
-        if (_isSameDay(d, yesterday)) resolvedYesterday++;
-      }
-    }
-  }
-
-
-
+          // Calculate resolved stats from ALL incidents (not filtered)
+          for (var doc in _displayedIncidents) {
+            final status = (doc['latest_status'] ?? doc['status'] ?? 'pending').toString().toLowerCase();
+            if (status == 'resolved') {
+              final resolvedAt = doc['resolvedAt'] as String?;
+              final ts = resolvedAt ?? doc['timestamp'] as String?;
+              if (ts != null) {
+                try {
+                  final d = DateTime.parse(ts).toLocal();
+                  if (_isSameDay(d, today)) resolvedToday++;
+                  if (_isSameDay(d, yesterday)) resolvedYesterday++;
+                } catch (e) {
+                  debugPrint('Error parsing resolved timestamp: $e');
+                }
+              }
+            }
+          }
     return Card(
       color: Theme.of(context).cardColor,
       elevation: 2,
@@ -737,12 +742,19 @@ Widget build(BuildContext context) {
 
   DataRow _buildDataRow(Map<String, dynamic> doc) {
     final timestamp = doc['timestamp'] as String?;
-    final date = timestamp != null
-        ? DateFormat('MMM d, yyyy').format(DateTime.parse(timestamp))
+    
+    // Convert to local timezone
+    final localDateTime = timestamp != null 
+        ? DateTime.parse(timestamp).toLocal()
+        : null;
+    
+    final date = localDateTime != null
+        ? DateFormat('MMM d, yyyy').format(localDateTime)
         : 'N/A';
-    final time = timestamp != null
-        ? DateFormat('h:mm a').format(DateTime.parse(timestamp))
+    final time = localDateTime != null
+        ? DateFormat('h:mm a').format(localDateTime)
         : 'N/A';
+    
     final location = (doc['address'] ?? 'Unknown').toString();
     final rawType = (doc['incident_type'] ?? '').toString();
     final status = (doc['latest_status'] ?? doc['status'] ?? 'pending').toString().toLowerCase();

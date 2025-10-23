@@ -68,7 +68,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
         if (value == null || value.isEmpty) {
           return 'Email address is required';
         }
-        if (!value.contains('@') || !value.contains('.')) {
+        if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(value)) {
           return 'Enter a valid email address';
         }
         return null;
@@ -175,6 +175,37 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
     }
   }
 
+  // Check database availability before login
+  Future<bool> _checkDatabaseAvailability() async {
+    try {
+      debugPrint('🔍 Checking database availability...');
+      
+      // Try to execute a simple query to check database connectivity
+      await _supabase
+          .from('dashboard_users')
+          .select('count')
+          .limit(1)
+          .timeout(const Duration(seconds: 10));
+      
+      debugPrint('✅ Database is available');
+      return true;
+    } on PostgrestException catch (e) {
+      debugPrint('❌ Database error: ${e.message}');
+      if (e.message.contains('connection') || e.message.contains('timeout')) {
+        _showSnackbar('Database connection failed. Please try again later.', SnackbarType.error);
+      } else {
+        // Other database errors might be acceptable (like RLS policies)
+        debugPrint('⚠️ Database accessible but with restrictions: ${e.message}');
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('❌ Database connectivity check failed: $e');
+      _showSnackbar('Service temporarily unavailable. Please try again later.', SnackbarType.error);
+      return false;
+    }
+  }
+
   RegistrationValidationResult _validateRegistration() {
     if (!termsAccepted) {
       setState(() => showTermsError = true);
@@ -202,172 +233,259 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
     return RegistrationValidationResult(isValid: true);
   }
 
-Future<void> _handleLogin() async {
-  final response = await _supabase.auth.signInWithPassword(
-    email: email,
-    password: password,
-  );
-
-  if (response.user == null) {
-    _showSnackbar('Login failed. Please check your credentials.', SnackbarType.error);
-    return;
-  }
-
-  try {
-    // Query dashboard_users table for user role - uses users_select_own_profile policy
-    final userData = await _supabase
-        .from('dashboard_users') 
-        .select('role, email, personal_details')
-        .eq('id', response.user!.id)
-        .single();
-
-    final userRole = userData['role'] as String?;
-    
-    // If user doesn't exist in dashboard_users
-    if (userRole == null) {
-      _showSnackbar('Access denied. User not found in dashboard system.', SnackbarType.error);
-      await _supabase.auth.signOut();
+  Future<void> _handleLogin() async {
+    // FIRST: Check database availability before proceeding
+    final isDatabaseAvailable = await _checkDatabaseAvailability();
+    if (!isDatabaseAvailable) {
+      setState(() => isLoading = false);
       return;
     }
 
-    // Validate role
-    if (userRole != 'admin' && userRole != 'user') {
-      _showSnackbar('Access denied. Invalid user permissions.', SnackbarType.error);
-      await _supabase.auth.signOut();
-      return;
+    try {
+      final response = await _supabase.auth.signInWithPassword(
+        email: email,
+        password: password,
+      );
+
+      if (response.user == null) {
+        _showSnackbar('Login failed. Please check your credentials.', SnackbarType.error);
+        return;
+      }
+
+      debugPrint('🔐 User signed in: ${response.user!.email}');
+      debugPrint('📧 User metadata: ${response.user!.userMetadata}');
+
+      // Enhanced email verification check
+      final isEmailVerified = _isEmailVerified(response);
+      
+      debugPrint('✅ Email verified: $isEmailVerified');
+      debugPrint('📅 Email confirmed at: ${response.user!.emailConfirmedAt}');
+
+      // CRITICAL: Block login if email not verified
+      if (!isEmailVerified) {
+        _showSnackbar(
+          'Please verify your email address before logging in. Check your inbox for the verification link.',
+          SnackbarType.warning
+        );
+        
+        // Force sign out and prevent any further execution
+        await _cleanupSession();
+        debugPrint('🚫 User signed out due to unverified email');
+        return; // Completely stop login process
+      }
+
+      // ONLY proceed if email is verified
+      debugPrint('✅ Email verified, proceeding with dashboard access check...');
+
+      // Query dashboard_users table for user role
+      final userData = await _supabase
+          .from('dashboard_users') 
+          .select('role, email, personal_details')
+          .eq('id', response.user!.id)
+          .single();
+
+      final userRole = userData['role'] as String?;
+      
+      debugPrint('🎯 User role from dashboard: $userRole');
+
+      // If user doesn't exist in dashboard_users
+      if (userRole == null) {
+        _showSnackbar('Access denied. User not found in dashboard system.', SnackbarType.error);
+        await _cleanupSession();
+        return;
+      }
+
+      // Validate role
+      if (userRole != 'admin' && userRole != 'user' && userRole != 'moderator') {
+        _showSnackbar('Access denied. Invalid user permissions.', SnackbarType.error);
+        await _cleanupSession();
+        return;
+      }
+
+      // Update user's last login timestamp
+      await _updateUserLastLogin(response.user!.id);
+
+      _showSnackbar('Login successful! Welcome back.', SnackbarType.success);
+      
+      // Add a small delay to show success message
+      await Future.delayed(const Duration(milliseconds: 1500));
+
+      if (!mounted) return;
+      
+      // Navigate to appropriate dashboard
+      final routeName = '/${userRole}-dashboard';
+      debugPrint('🔄 Navigating to: $routeName');
+      Navigator.pushReplacementNamed(context, routeName);
+
+    } on PostgrestException catch (e) {
+      debugPrint('❌ Database error during login: ${e.message}');
+      
+      if (e.message.contains('PGRST116')) { // No rows returned
+        _showSnackbar('Access denied. User not found in dashboard system.', SnackbarType.error);
+        await _cleanupSession();
+      } else if (e.message.contains('row-level security policy')) {
+        _showSnackbar('Access denied. Insufficient permissions.', SnackbarType.error);
+        await _cleanupSession();
+      } else {
+        _showSnackbar('Login error. Please try again.', SnackbarType.error);
+      }
+    } on AuthException catch (e) {
+      _handleAuthException(e);
+    } catch (e) {
+      debugPrint('❌ Unexpected error during login: $e');
+      _showSnackbar('An unexpected error occurred. Please try again.', SnackbarType.error);
     }
+  }
 
-    // Update user's last login timestamp - uses users_update_own_profile policy
-    await _updateUserLastLogin(response.user!.id);
+  Future<void> _handleRegistration() async {
+    setState(() => isLoading = true);
 
-    _showSnackbar('Login successful! Welcome back.', SnackbarType.success);
-    await Future.delayed(const Duration(seconds: 1));
+    try {
+      debugPrint('=== REGISTRATION STARTED ===');
+      
+      // Step 1: Create auth user
+      final response = await _supabase.auth.signUp(
+        email: email,
+        password: password,
+        data: {
+          'type': 'dashboard',
+          'first_name': firstName,
+          'last_name': lastName,
+        }
+      );
 
-    if (!mounted) return;
-    Navigator.pushReplacementNamed(context, '/${userRole}_dashboard');
+      if (response.user == null) {
+        _showSnackbar('Registration failed. Please try again.', SnackbarType.error);
+        return;
+      }
 
-  } on PostgrestException catch (e) {
-    debugPrint('Database error during login: ${e.message}');
-    
-    if (e.message.contains('PGRST116')) { // No rows returned
-      _showSnackbar('Access denied. User not found in dashboard system.', SnackbarType.error);
-      await _supabase.auth.signOut();
-    } else if (e.message.contains('row-level security policy')) {
-      _showSnackbar('Access denied. Insufficient permissions.', SnackbarType.error);
-      await _supabase.auth.signOut();
-    } else {
-      _showSnackbar('Login error. Please try again.', SnackbarType.error);
+      debugPrint('✅ Auth user created: ${response.user!.id}');
+
+      // Show verification email sent message immediately
+      _showSnackbar(
+        'Verification email sent! Please check your inbox to verify your email address.',
+        SnackbarType.success
+      );
+
+      // Step 2: Create user profile using service role
+      final adminClient = SupabaseClient(
+        SupabaseConfig.url,
+        SupabaseConfig.serviceRoleKey
+      );
+
+      debugPrint('Creating user profile in dashboard_users...');
+
+      await adminClient.from('dashboard_users').insert({
+        'id': response.user!.id,
+        'email': email,
+        'role': 'user', // Automatically set to 'user'
+        'personal_details': {
+          'firstName': firstName,
+          'lastName': lastName,
+          'phoneNumber': phoneNumber,
+          'dateOfBirth': dateOfBirth?.toIso8601String(),
+          'lastUpdated': DateTime.now().toIso8601String(),
+        },
+        'security': {
+          'passwordStrength': _passwordManager.calculatePasswordStrength(password),
+          'commonPasswordCheck': _passwordManager.isCommonPassword(password),
+          'accountCreated': DateTime.now().toIso8601String(),
+          'lastPasswordChange': DateTime.now().toIso8601String(),
+        },
+        'created_at': DateTime.now().toIso8601String(),
+      });
+
+      debugPrint('✅ User profile created successfully');
+
+      _showSnackbar(
+        "Account created successfully! Please check your email to verify your account.",
+        SnackbarType.success,
+      );
+
+      _resetForm();
+      setState(() => isLogin = true);
+
+    } on AuthException catch (e) {
+      debugPrint('❌ AuthException: ${e.message}');
+      _handleAuthException(e);
+    } on PostgrestException catch (e) {
+      debugPrint('❌ PostgrestException: ${e.message}');
+      debugPrint('Details: ${e.details}');
+      
+      // Even if database insert fails, the auth user was created and email was sent
+      _showSnackbar(
+        'Account created! Please sign in after verifying your email.',
+        SnackbarType.success
+      );
+      _resetForm();
+      setState(() => isLogin = true);
+    } catch (e) {
+      debugPrint('❌ Unexpected error: $e');
+      _showSnackbar('Registration failed. Please try again.', SnackbarType.error);
+    } finally {
+      if (mounted) {
+        setState(() => isLoading = false);
+      }
     }
-  } catch (e) {
-    debugPrint('Unexpected error during login: $e');
-    _showSnackbar('An unexpected error occurred. Please try again.', SnackbarType.error);
-  }
-}
-
-Future<void> _handleRegistration() async {
-  final response = await _supabase.auth.signUp(
-    email: email,
-    password: password,
-    data: {'type': 'dashboard'}
-  );
-
-  if (response.user == null) {
-    _showSnackbar('Registration failed. Please try again.', SnackbarType.error);
-    return;
   }
 
-  // Show verification email sent message immediately
-  _showSnackbar(
-    'Verification email sent! Please check your inbox to verify your email address.',
-    SnackbarType.success
-  );
-
-  const assignedRole = 'user'; // Always 'user' for new registrations
-  
-  try {
-    // IMPORTANT: Use the service role client to bypass RLS for initial profile creation
-    final adminClient = SupabaseClient(
-      SupabaseConfig.url,
-      SupabaseConfig.serviceRoleKey // Make sure this is set in your config
-    );
-
-    // Create user profile in dashboard_users table using service role
-    await adminClient.from('dashboard_users').insert({
-      'id': response.user!.id,
-      'email': email,
-      'role': assignedRole,
-      'personal_details': {
-        'firstName': firstName,
-        'lastName': lastName,
-        'phoneNumber': phoneNumber,
-        'dateOfBirth': dateOfBirth?.toIso8601String(),
-        'lastUpdated': DateTime.now().toIso8601String(),
-      },
-      'security': {
-        'passwordStrength': _passwordManager.calculatePasswordStrength(password),
-        'passwordHash': _passwordManager.generatePasswordHash(password),
-        'commonPasswordCheck': _passwordManager.isCommonPassword(password),
-        'accountCreated': DateTime.now().toIso8601String(),
-        'lastPasswordChange': DateTime.now().toIso8601String(),
-        'passwordHistory': [_passwordManager.generatePasswordHash(password)],
-      },
-      'created_at': DateTime.now().toIso8601String(),
-      'last_login': DateTime.now().toIso8601String(),
-    });
-
-    debugPrint('User profile created successfully in dashboard_users with role: $assignedRole');
-
-    _showSnackbar(
-      "Account created successfully! Please check your email to verify your account.",
-      SnackbarType.success,
-    );
-
-    _resetForm();
-    setState(() {
-      isLogin = true;
-    });
-
-  } on PostgrestException catch (e) {
-    debugPrint('Database error during registration: ${e.message}');
+  // Fixed email verification check
+  bool _isEmailVerified(AuthResponse response) {
+    final user = response.user;
+    if (user == null) return false;
     
-    // Even if database insert fails, the auth user was created and email was sent
-    _showSnackbar(
-      'Account created! Please sign in after verifying your email.',
-      SnackbarType.success
-    );
-    _resetForm();
-    setState(() => isLogin = true);
-  } catch (e) {
-    debugPrint('Unexpected error during profile creation: $e');
-    _showSnackbar(
-      'Account created! Please check your email for verification.',
-      SnackbarType.success
-    );
-    _resetForm();
-    setState(() => isLogin = true);
+    // Check email confirmation - using only emailConfirmedAt
+    final isEmailConfirmed = user.emailConfirmedAt != null;
+    
+    debugPrint('🔍 Email Verification Status:');
+    debugPrint('   - Email confirmed at: ${user.emailConfirmedAt}');
+    debugPrint('   - Last sign in: ${user.lastSignInAt}');
+    debugPrint('   - User ID: ${user.id}');
+    
+    return isEmailConfirmed;
   }
-}
+
   // Add this method to update user's last login timestamp
-Future<void> _updateUserLastLogin(String userId) async {
-  try {
-    await _supabase
-        .from('dashboard_users')
-        .update({
-          'last_login': DateTime.now().toIso8601String(),
-        })
-        .eq('id', userId);
-    debugPrint('User last login updated: $userId');
-  } catch (e) {
-    debugPrint('Error updating user last login: $e');
-    // Non-critical error, don't disrupt login flow
+  Future<void> _updateUserLastLogin(String userId) async {
+    try {
+      await _supabase
+          .from('dashboard_users')
+          .update({
+            'last_login': DateTime.now().toIso8601String(),
+          })
+          .eq('id', userId);
+      debugPrint('User last login updated: $userId');
+    } catch (e) {
+      debugPrint('Error updating user last login: $e');
+      // Non-critical error, don't disrupt login flow
+    }
   }
-}
+
+  // Enhanced session cleanup
+  Future<void> _cleanupSession() async {
+    try {
+      // Clear current session
+      await _supabase.auth.signOut();
+      
+      // Refresh to ensure no stale session exists
+      await _supabase.auth.refreshSession();
+      
+      debugPrint('✅ Session cleaned up successfully');
+    } catch (e) {
+      debugPrint('❌ Session cleanup error: $e');
+    }
+  }
 
   void _resetForm() {
     _formKey.currentState?.reset();
     setState(() {
+      email = '';
       password = '';
       confirmPassword = '';
+      firstName = '';
+      lastName = '';
+      phoneNumber = '';
+      dateOfBirth = null;
       termsAccepted = false;
       showTermsError = false;
       // Reset touched fields
@@ -384,10 +502,17 @@ Future<void> _updateUserLastLogin(String userId) async {
         errorMessage = "Invalid email or password. Please check your credentials.";
         break;
       case 'Email not confirmed':
-        errorMessage = "Please confirm your email address before logging in.";
+        errorMessage = "Please confirm your email address before logging in. Check your inbox for the verification link.";
+        // Force sign out when email is not confirmed
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _supabase.auth.signOut();
+        });
         break;
       case 'User already registered':
         errorMessage = "This email is already registered. Please sign in instead.";
+        break;
+      case 'Email rate limit exceeded':
+        errorMessage = "Too many attempts. Please try again in a few minutes.";
         break;
       case 'Weak password':
         errorMessage = "Password is too weak. Please choose a stronger password.";
@@ -396,14 +521,18 @@ Future<void> _updateUserLastLogin(String userId) async {
         errorMessage = "Password must be at least 6 characters long.";
         break;
       default:
-        errorMessage = e.message;
+        if (e.message.toLowerCase().contains('network') || e.message.toLowerCase().contains('connection')) {
+          errorMessage = "Network error. Please check your internet connection.";
+        } else {
+          errorMessage = "Authentication error: ${e.message}";
+        }
     }
     _showSnackbar(errorMessage, SnackbarType.error);
   }
 
   void _showSnackbar(String message, SnackbarType type) {
-    Color backgroundColor = Colors.grey.shade700;
-    IconData icon = Icons.info_outline;
+    Color backgroundColor;
+    IconData icon;
     
     switch (type) {
       case SnackbarType.success:
@@ -459,6 +588,23 @@ Future<void> _updateUserLastLogin(String userId) async {
       initialDate: DateTime.now(),
       firstDate: DateTime(1900),
       lastDate: DateTime.now(),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: Colors.blue,
+              onPrimary: Colors.white,
+              onSurface: Colors.black,
+            ),
+            textButtonTheme: TextButtonThemeData(
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.blue,
+              ),
+            ),
+          ),
+          child: child!,
+        );
+      },
     );
     if (picked != null && picked != dateOfBirth) {
       setState(() {
@@ -696,19 +842,16 @@ Future<void> _updateUserLastLogin(String userId) async {
     }
   }
 
-  Future<void> _resetPassword() async {
-    if (email.isEmpty || !email.contains('@')) {
-      _showResetPasswordDialog();
-      return;
-    }
-    
-    if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(email)) {
-      _showSnackbar("Please enter a valid email address", SnackbarType.error);
-      return;
-    }
-    
-    await _sendPasswordResetEmail(email);
+Future<void> _resetPassword() async {
+  // If email field is empty or invalid, show dialog to enter email
+  if (email.isEmpty || !RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(email)) {
+    _showResetPasswordDialog();
+    return;
   }
+  
+  // Use the email from the form field
+  await _sendPasswordResetEmail(email);
+}
 
   void _showResetPasswordDialog() {
     final TextEditingController emailController = TextEditingController();
@@ -729,12 +872,13 @@ Future<void> _updateUserLastLogin(String userId) async {
                 decoration: const InputDecoration(
                   labelText: 'Email Address',
                   border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.email_outlined),
                 ),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
                     return 'Please enter your email address';
                   }
-                  if (!value.contains('@')) {
+                  if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(value)) {
                     return 'Please enter a valid email address';
                   }
                   return null;
@@ -770,37 +914,45 @@ Future<void> _updateUserLastLogin(String userId) async {
     );
   }
 
-  Future<void> _sendPasswordResetEmail(String emailAddress) async {
-    setState(() => isResettingPassword = true);
+Future<void> _sendPasswordResetEmail(String emailAddress) async {
+  setState(() => isResettingPassword = true);
+  
+  try {
+    debugPrint('📧 Sending password reset email to: $emailAddress');
     
-    try {
-      await _supabase.auth.resetPasswordForEmail(emailAddress);
-      
-      _showSnackbar(
-        "Password reset email sent! Check your inbox for instructions. If you don't see it, check your spam folder.",
-        SnackbarType.success
-      );
-      
-      if (email.isEmpty) {
-        setState(() => email = emailAddress);
-      }
-      
-    } on AuthException catch (e) {
-      String errorMessage;
-      switch (e.message) {
-        case 'User not found':
-          errorMessage = "No account found with this email address. Please check your email or register for a new account.";
-          break;
-        default:
-          errorMessage = "Failed to send password reset email. Please try again.";
-      }
-      _showSnackbar(errorMessage, SnackbarType.error);
-    } catch (e) {
-      _showSnackbar("An unexpected error occurred. Please try again later.", SnackbarType.error);
-    } finally {
-      setState(() => isResettingPassword = false);
+    await _supabase.auth.resetPasswordForEmail(
+      emailAddress,
+      redirectTo: 'http://localhost:3000/reset-password',
+    );
+    
+    debugPrint('✅ Password reset email sent successfully');
+    
+    _showSnackbar(
+      "Password reset email sent! Check your inbox for the reset link.",
+      SnackbarType.success
+    );
+    
+  } on AuthException catch (e) {
+    debugPrint('❌ AuthException: ${e.message}');
+    String errorMessage;
+    switch (e.message) {
+      case 'User not found':
+        errorMessage = "No account found with this email address.";
+        break;
+      case 'Email rate limit exceeded':
+        errorMessage = "Too many attempts. Please try again in a few minutes.";
+        break;
+      default:
+        errorMessage = "Failed to send reset email: ${e.message}";
     }
+    _showSnackbar(errorMessage, SnackbarType.error);
+  } catch (e) {
+    debugPrint('❌ Unexpected error: $e');
+    _showSnackbar("An unexpected error occurred. Please try again.", SnackbarType.error);
+  } finally {
+    setState(() => isResettingPassword = false);
   }
+}
 
   @override
   Widget build(BuildContext context) {
@@ -1493,6 +1645,7 @@ class PasswordSecurityManager {
   }
 }
 
+// Advanced Password Strength Indicator with detailed feedback
 // Advanced Password Strength Indicator with detailed feedback
 class AdvancedPasswordStrengthIndicator extends StatelessWidget {
   final String password;
