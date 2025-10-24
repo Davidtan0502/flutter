@@ -3708,7 +3708,7 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
       }
     }
   }
-
+ 
   @override
   void dispose() {
     _noteController.dispose();
