@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart'; // Add Supabase import
+import 'package:radar_dashboard/screens/change_password_screen.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:radar_dashboard/login/login_register_screen.dart';
 import 'package:radar_dashboard/screens/profile_screen.dart';
+
 
 class SettingsScreen extends StatefulWidget {
   final VoidCallback onMenuPressed;
@@ -21,7 +23,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   bool notificationsEnabled = true;
-  final SupabaseClient _supabase = Supabase.instance.client; // Add Supabase client
+  final SupabaseClient _supabase = Supabase.instance.client;
 
   @override
   Widget build(BuildContext context) {
@@ -66,7 +68,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ListTile(
                       leading: const Icon(Icons.lock_reset_outlined),
                       title: const Text('Reset Password'),
-                      onTap: _handlePasswordReset,
+                      onTap: _navigateToResetPassword,
                     ),
                     ListTile(
                       leading: const Icon(Icons.delete_forever, color: Colors.red),
@@ -129,19 +131,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Future<void> _handlePasswordReset() async {
-    final user = _supabase.auth.currentUser;
-    if (user?.email == null) {
-      _showSnackbar('No email found for password reset');
-      return;
-    }
-
-    try {
-      await _supabase.auth.resetPasswordForEmail(user!.email!);
-      _showSnackbar('Password reset email sent! Check your inbox.');
-    } catch (e) {
-      _showSnackbar('Error sending reset email: $e');
-    }
+  void _navigateToResetPassword() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const ChangePasswordScreen(),
+      ),
+    );
   }
 
   Future<void> _handleDeleteAccount() async {

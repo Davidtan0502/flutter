@@ -66,43 +66,126 @@ class _AdminManagementScreenState extends State<AdminManagementScreen> with Sing
 
   // Get the appropriate client based on system type
   SupabaseClient get _currentClient => _selectedSystem == 0 ? _supabaseAdmin : _supabase;
-  
 
-  // Role management methods using admin client
+  // FIXED: Role management methods that handle null responses
   Future<bool> _promoteToModerator(String userId) async {
     try {
+      debugPrint('🔄 Promoting user $userId to moderator');
+      
+      // Perform the update - response might be null but that's OK
       final response = await _supabaseAdmin
           .from('dashboard_users')
-          .update({'role': 'moderator'})
+          .update({
+            'role': 'moderator',
+            'updated_at': DateTime.now().toIso8601String()
+          })
           .eq('id', userId);
 
-      return response != null;
+      debugPrint('📊 Update response: $response');
+      
+      // Wait a moment for the update to propagate
+      await Future.delayed(const Duration(milliseconds: 300));
+      
+      // VERIFY the update actually worked
+      final verification = await _supabaseAdmin
+          .from('dashboard_users')
+          .select('role, email')
+          .eq('id', userId)
+          .single();
+
+      debugPrint('🔍 Verification - current role: ${verification['role']}');
+      
+      if (verification['role'] == 'moderator') {
+        debugPrint('✅ SUCCESS: User promoted to moderator');
+        if (mounted) {
+          _showCustomSnackBar(
+            'User promoted to moderator successfully',
+            Icons.check_circle_rounded,
+            Colors.green,
+          );
+        }
+        return true;
+      } else {
+        debugPrint('❌ FAILED: Role not updated');
+        if (mounted) {
+          _showCustomSnackBar(
+            'Failed to promote user',
+            Icons.error_rounded,
+            Colors.red,
+          );
+        }
+        return false;
+      }
     } catch (e) {
-      debugPrint('Error promoting to moderator: $e');
-      _showCustomSnackBar(
-        'Failed to promote user to moderator',
-        Icons.error_rounded,
-        Colors.red,
-      );
+      debugPrint('💥 Error promoting user: $e');
+      if (mounted) {
+        _showCustomSnackBar(
+          'Failed to promote user: ${e.toString()}',
+          Icons.error_rounded,
+          Colors.red,
+        );
+      }
       return false;
     }
   }
 
   Future<bool> _demoteToUser(String userId) async {
     try {
+      debugPrint('🔄 Demoting user $userId to user role');
+      
+      // Perform the update
       final response = await _supabaseAdmin
           .from('dashboard_users')
-          .update({'role': 'user'})
+          .update({
+            'role': 'user',
+            'updated_at': DateTime.now().toIso8601String()
+          })
           .eq('id', userId);
 
-      return response != null;
+      debugPrint('📊 Update response: $response');
+      
+      // Wait a moment for the update to propagate
+      await Future.delayed(const Duration(milliseconds: 300));
+      
+      // VERIFY the update actually worked
+      final verification = await _supabaseAdmin
+          .from('dashboard_users')
+          .select('role, email')
+          .eq('id', userId)
+          .single();
+
+      debugPrint('🔍 Verification - current role: ${verification['role']}');
+      
+      if (verification['role'] == 'user') {
+        debugPrint('✅ SUCCESS: User demoted to regular user');
+        if (mounted) {
+          _showCustomSnackBar(
+            'User demoted to regular user successfully',
+            Icons.check_circle_rounded,
+            Colors.green,
+          );
+        }
+        return true;
+      } else {
+        debugPrint('❌ FAILED: Role not updated');
+        if (mounted) {
+          _showCustomSnackBar(
+            'Failed to demote user',
+            Icons.error_rounded,
+            Colors.red,
+          );
+        }
+        return false;
+      }
     } catch (e) {
-      debugPrint('Error demoting to user: $e');
-      _showCustomSnackBar(
-        'Failed to demote user',
-        Icons.error_rounded,
-        Colors.red,
-      );
+      debugPrint('💥 Error demoting user: $e');
+      if (mounted) {
+        _showCustomSnackBar(
+          'Failed to demote user: ${e.toString()}',
+          Icons.error_rounded,
+          Colors.red,
+        );
+      }
       return false;
     }
   }
@@ -388,7 +471,6 @@ class _AdminManagementScreenState extends State<AdminManagementScreen> with Sing
               tooltip: 'View users on map',
             ),
           ),
-        // Add Sign Out button
         Container(
           margin: const EdgeInsets.all(4),
           decoration: BoxDecoration(
@@ -428,7 +510,7 @@ class _AdminManagementScreenState extends State<AdminManagementScreen> with Sing
                     SizedBox(height: isSmallScreen ? 20.0 : 24.0),
                     _buildUsersHeader(isSmallScreen),
                     SizedBox(height: isSmallScreen ? 16.0 : 20.0),
-                    _buildLiveStats(), // Keep the statistics chips
+                    _buildLiveStats(),
                   ],
                 ),
               ),
@@ -791,7 +873,6 @@ class _AdminManagementScreenState extends State<AdminManagementScreen> with Sing
     );
   }
 
-  // Updated: Removed only the counter container but keep the statistics
   Widget _buildUsersHeader(bool isSmallScreen) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8.0),
@@ -851,6 +932,28 @@ class _AdminManagementScreenState extends State<AdminManagementScreen> with Sing
     );
   }
 
+  // FIXED: Sort users with admins first
+  List<Map<String, dynamic>> _sortUsersByRole(List<Map<String, dynamic>> users) {
+    return List.from(users)
+      ..sort((a, b) {
+        final aRole = a['role']?.toString().toLowerCase() ?? 'user';
+        final bRole = b['role']?.toString().toLowerCase() ?? 'user';
+        
+        // Admin comes first
+        if (aRole == 'admin' && bRole != 'admin') return -1;
+        if (aRole != 'admin' && bRole == 'admin') return 1;
+        
+        // Then moderators
+        if (aRole == 'moderator' && bRole == 'user') return -1;
+        if (aRole == 'user' && bRole == 'moderator') return 1;
+        
+        // Finally sort by creation date for same roles
+        final aCreated = a['created_at']?.toString() ?? '';
+        final bCreated = b['created_at']?.toString() ?? '';
+        return bCreated.compareTo(aCreated); // newest first
+      });
+  }
+
   Widget _buildUsersList() {
     return StreamBuilder<List<Map<String, dynamic>>>(
       stream: _currentClient
@@ -881,7 +984,11 @@ class _AdminManagementScreenState extends State<AdminManagementScreen> with Sing
         }
 
         final users = snapshot.data!;
-        final displayUsers = _selectedSystem == 1 ? _filterRadarUsers(users) : users;
+        
+        // FIXED: Sort users - admins first, then others
+        final sortedUsers = _sortUsersByRole(users);
+        
+        final displayUsers = _selectedSystem == 1 ? _filterRadarUsers(sortedUsers) : sortedUsers;
 
         if (_selectedSystem == 1 && displayUsers.isEmpty && _searchQuery.isNotEmpty) {
           return SliverFillRemaining(
@@ -922,7 +1029,6 @@ class _AdminManagementScreenState extends State<AdminManagementScreen> with Sing
     );
   }
 
-  // KEEP the statistics chips below the users header
   Widget _buildLiveStats() {
     return StreamBuilder<List<Map<String, dynamic>>>(
       stream: _currentClient.from(_currentTable).stream(primaryKey: ['id']),
@@ -998,13 +1104,16 @@ class _AdminManagementScreenState extends State<AdminManagementScreen> with Sing
     ];
   }
 
+  // FIXED: Updated dashboard system chips to include admin count
   List<Widget> _buildDashboardSystemChips(List<Map<String, dynamic>> allUsers) {
+    final adminCount = allUsers.where((user) => _isAdmin(user)).length;
     final moderatorCount = allUsers.where((user) => _isModerator(user)).length;
     final activeModerators = allUsers.where((user) => _isModerator(user) && _isUserActive(user)).length;
-    final userCount = allUsers.where((user) => !_isModerator(user)).length;
+    final userCount = allUsers.where((user) => !_isModerator(user) && !_isAdmin(user)).length;
 
     return [
       _buildStatChip('${allUsers.length}', 'Total Users', Icons.people_rounded, Colors.blue),
+      if (adminCount > 0) _buildStatChip('$adminCount', 'Admins', Icons.security_rounded, Colors.red),
       _buildStatChip('$moderatorCount', 'Moderators', Icons.admin_panel_settings_rounded, Colors.purple),
       _buildStatChip('$activeModerators', 'Active Moderators', Icons.online_prediction_rounded, Colors.green),
       _buildStatChip('$userCount', 'Regular Users', Icons.person_rounded, Colors.teal),
@@ -1094,8 +1203,6 @@ class _AdminManagementScreenState extends State<AdminManagementScreen> with Sing
       },
     );
   }
-
-  // ... (Rest of the methods remain the same - loading, error, empty states)
 
   Widget _buildLoadingState() {
     return Center(
@@ -1472,6 +1579,11 @@ class _AdminManagementScreenState extends State<AdminManagementScreen> with Sing
     return user['role'] == 'moderator';
   }
 
+  // ADDED: Helper method to check for admin role
+  bool _isAdmin(Map<String, dynamic> user) {
+    return user['role'] == 'admin';
+  }
+
   Color _getBackgroundColor() {
     return Theme.of(context).brightness == Brightness.dark
         ? Theme.of(context).colorScheme.surfaceContainerHighest
@@ -1595,9 +1707,7 @@ class _SystemToggleButton extends StatelessWidget {
   }
 }
 
-// ... (Keep all your existing _DashboardUserCard, _RadarAppUserCard, _UserData, _DetailRow classes)
-// They remain exactly the same as in your original code
-
+// FIXED: Dashboard User Card with admin users always first and non-editable
 class _DashboardUserCard extends StatefulWidget {
   final Map<String, dynamic> userData;
   final VoidCallback? onUserDeleted;
@@ -1619,9 +1729,17 @@ class _DashboardUserCard extends StatefulWidget {
 class __DashboardUserCardState extends State<_DashboardUserCard> {
   bool _updating = false;
 
+  // FIXED: Role update method with admin protection
   Future<void> _updateUserRole(String? newRole) async {
+    // FIXED: Prevent role changes for admin users
+    if (widget.userData['role'] == 'admin') {
+      _showErrorSnackbar('Cannot change role for admin users');
+      return;
+    }
+
     if (newRole == null || newRole == widget.userData['role']) return;
 
+    if (!mounted) return;
     setState(() => _updating = true);
     
     try {
@@ -1632,38 +1750,57 @@ class __DashboardUserCardState extends State<_DashboardUserCard> {
         success = await widget.demoteToUser(widget.userData['id']);
       }
 
-      if (success) {
-        _showSuccessSnackbar('User role updated to $newRole');
+      if (success && mounted) {
+        // Update local state immediately for better UX
+        setState(() {
+          widget.userData['role'] = newRole;
+        });
+        
+        // Force refresh the stream data
         widget.onUserDeleted?.call();
-      } else {
-        _showErrorSnackbar('Failed to update role. Please try again.');
+        
+        _showSuccessSnackbar('User role updated to ${newRole.toUpperCase()}');
       }
     } catch (e) {
-      _showErrorSnackbar('Failed to update role: $e');
+      if (mounted) {
+        _showErrorSnackbar('Failed to update role: ${e.toString()}');
+      }
     } finally {
-      setState(() => _updating = false);
+      if (mounted) {
+        setState(() => _updating = false);
+      }
     }
   }
 
   void _showSuccessSnackbar(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
         backgroundColor: Colors.green,
+        behavior: SnackBarBehavior.floating,
       ),
     );
   }
 
   void _showErrorSnackbar(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
         backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
       ),
     );
   }
 
   Future<void> _deleteUserAccount() async {
+    // FIXED: Prevent deletion of admin users
+    if (widget.userData['role'] == 'admin') {
+      _showErrorSnackbar('Cannot delete admin user accounts');
+      return;
+    }
+
     await UserManagementService.deleteUserAccount(
       context: context,
       userId: widget.userData['id'],
@@ -1711,13 +1848,15 @@ class __DashboardUserCardState extends State<_DashboardUserCard> {
             onPressed: () => Navigator.pop(context),
             child: const Text('Close'),
           ),
-          TextButton(
-            onPressed: _deleteUserAccount,
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.red,
+          // FIXED: Only show delete button for non-admin users
+          if (widget.userData['role'] != 'admin')
+            TextButton(
+              onPressed: _deleteUserAccount,
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.red,
+              ),
+              child: const Text('Delete Account'),
             ),
-            child: const Text('Delete Account'),
-          ),
         ],
       ),
     );
@@ -1794,8 +1933,11 @@ class __DashboardUserCardState extends State<_DashboardUserCard> {
     }
   }
 
+  // FIXED: Updated role colors to include admin
   Color _getRoleColor(String role) {
     switch (role) {
+      case 'admin':
+        return Colors.red;
       case 'moderator':
         return Colors.purple;
       case 'user':
@@ -1805,8 +1947,11 @@ class __DashboardUserCardState extends State<_DashboardUserCard> {
     }
   }
 
+  // FIXED: Updated role icons to include admin
   IconData _getRoleIcon(String role) {
     switch (role) {
+      case 'admin':
+        return Icons.security_rounded;
       case 'moderator':
         return Icons.admin_panel_settings;
       case 'user':
@@ -1819,6 +1964,7 @@ class __DashboardUserCardState extends State<_DashboardUserCard> {
   @override
   Widget build(BuildContext context) {
     final userData = _getUserData();
+    final isAdmin = userData.role == 'admin';
     
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1845,11 +1991,11 @@ class __DashboardUserCardState extends State<_DashboardUserCard> {
               _buildRoleIcon(userData.role, userData.roleColor),
               const SizedBox(width: 12),
               _buildUserInfo(userData),
-              _buildActions(userData.role, userData.roleColor),
+              _buildActions(userData.role, userData.roleColor, isAdmin),
             ],
           ),
           const SizedBox(height: 8),
-          _buildRoleBadge(userData.role, userData.roleColor),
+          _buildRoleBadge(userData.role, userData.roleColor, isAdmin),
         ],
       ),
     );
@@ -2010,7 +2156,8 @@ class __DashboardUserCardState extends State<_DashboardUserCard> {
     );
   }
 
-  Widget _buildActions(String role, Color roleColor) {
+  // FIXED: Updated actions to handle admin users
+  Widget _buildActions(String role, Color roleColor, bool isAdmin) {
     if (_updating) {
       return const SizedBox(
         width: 20, 
@@ -2022,10 +2169,12 @@ class __DashboardUserCardState extends State<_DashboardUserCard> {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _buildRoleDropdown(role, roleColor),
+        if (!isAdmin) _buildRoleDropdown(role, roleColor),
+        if (isAdmin) _buildAdminBadge(),
         const SizedBox(width: 8),
-        _buildDeleteButton(),
-        const SizedBox(width: 4),
+        // FIXED: Don't show delete button for admin users
+        if (!isAdmin) _buildDeleteButton(),
+        if (!isAdmin) const SizedBox(width: 4),
         _buildInfoButton(),
       ],
     );
@@ -2061,6 +2210,42 @@ class __DashboardUserCardState extends State<_DashboardUserCard> {
     );
   }
 
+  // ADDED: Admin badge (non-editable)
+  Widget _buildAdminBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Colors.red.shade400, Colors.red.shade600],
+        ),
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.red.withOpacity(0.3),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.security_rounded, size: 14, color: Colors.white),
+          const SizedBox(width: 6),
+          Text(
+            'ADMIN',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+              letterSpacing: 0.8,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildDeleteButton() {
     return IconButton(
       icon: const Icon(Icons.delete_outline, size: 18),
@@ -2082,7 +2267,44 @@ class __DashboardUserCardState extends State<_DashboardUserCard> {
     );
   }
 
-  Widget _buildRoleBadge(String role, Color roleColor) {
+  // FIXED: Updated role badge to handle admin specially
+  Widget _buildRoleBadge(String role, Color roleColor, bool isAdmin) {
+    // FIXED: Special styling for admin badge
+    if (isAdmin) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Colors.red.shade400, Colors.red.shade600],
+          ),
+          borderRadius: BorderRadius.circular(10),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.red.withOpacity(0.3),
+              blurRadius: 4,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.security_rounded, size: 12, color: Colors.white),
+            const SizedBox(width: 6),
+            Text(
+              'ADMIN',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+                letterSpacing: 0.8,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
@@ -2103,6 +2325,7 @@ class __DashboardUserCardState extends State<_DashboardUserCard> {
   }
 }
 
+// Radar App User Card (unchanged)
 class _RadarAppUserCard extends StatefulWidget {
   final Map<String, dynamic> userData;
   final String searchQuery;

@@ -154,6 +154,9 @@ class _NavigationScreenState extends State<NavigationScreen>
           .where((item) =>
               item.title == 'Dashboard' ||
               item.title == 'Incident Reports' ||
+              item.title == 'Maps' ||
+              item.title == 'Analytics' ||
+              item.title == 'Notifications' ||
               item.title == 'Settings')
           .toList();
     }

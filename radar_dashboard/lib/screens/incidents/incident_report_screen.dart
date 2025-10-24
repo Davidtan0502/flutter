@@ -53,7 +53,272 @@ class IncidentReportConstants {
   ];
 }
 
-// Data Models
+// Enhanced Spam Detection Service
+class SpamDetectionService {
+  static final _spamPatterns = IncidentReportConstants.spamPatterns;
+  static final _suspiciousTypes = IncidentReportConstants.suspiciousIncidentTypes;
+  
+  // Pre-compiled regex patterns for better performance
+  static final _urlRegex = RegExp(r'((https?://|www\.)[^\s]+)');
+  static final _specialCharRegex = RegExp(r'[!@#$%^&*(),?":{}|<>]');
+  static final _misspellingPatterns = [
+    RegExp(r't[e]?st'), // test, tst
+    RegExp(r'dem[o]?o?'), // demo, demoo
+    RegExp(r'samp[le]?l?'), // sample, sampel
+    RegExp(r'fak[e]?'), // fake, fak
+    RegExp(r'spam[m]?'), // spam, spamm
+    RegExp(r'un[k]?now[n]?'), // unknown, unknow
+    RegExp(r'misc[elaneous]?'), // miscellaneous, misc
+    RegExp(r'ch[e]?ck'), // check, chek
+    RegExp(r'verif[y]?'), // verify, verif
+    RegExp(r'tr[i]?al'), // trial, trail
+    RegExp(r'exp[e]?r[i]?ment'), // experiment, expirement
+    RegExp(r'practic[e]?s?'), // practice, practise
+    RegExp(r'dum[m]?y'), // dummy, dumy
+    RegExp(r'bog[u]?s'), // bogus, bogous
+  ];
+
+  // Suspicious contact numbers
+  static final _suspiciousContacts = {
+    '0000000000', '1234567890', '1111111111', '0123456789',
+    '9999999999', '5555555555', '4444444444', '6666666666'
+  };
+
+  // Suspicious names
+  static final _suspiciousNames = {
+    'test', 'demo', 'user', 'admin', 'unknown', 'anonymous', 
+    'tester', 'guest', 'sample', 'fake', 'dummy'
+  };
+
+  // Suspicious locations
+  static final _suspiciousLocations = {
+    'test', 'demo', 'unknown', 'none', 'na', 'home', 'office', 
+    'street', 'road', 'address', 'location'
+  };
+
+  static Future<SpamAnalysisResult> analyzeIncident(Map<String, dynamic> incidentData) async {
+    final analysis = SpamAnalysisResult();
+    final description = (incidentData['description'] ?? '').toString().toLowerCase();
+    final contactNumber = (incidentData['contact_number'] ?? '').toString();
+    final name = (incidentData['name'] ?? '').toString().toLowerCase();
+    final incidentType = (incidentData['incident_type'] ?? '').toString().toLowerCase();
+    final address = (incidentData['address'] ?? '').toString().toLowerCase();
+    final landmark = (incidentData['landmark'] ?? '').toString().toLowerCase();
+
+    // EMERGENCY-SAFE: Higher threshold for emergency contexts
+    // Layer 1: High-confidence spam signals (immediate rejection)
+    if (_hasHighConfidenceSpamSignals(description, contactNumber, incidentType)) {
+      analysis.addReason('High-confidence spam signal detected', 10);
+      return analysis; // Immediate classification as spam
+    }
+
+    // Layer 2: Content-based spam detection
+    _analyzeContent(description, analysis);
+
+    // Layer 3: Incident type analysis
+    _analyzeIncidentType(incidentType, analysis);
+
+    // Layer 4: Contact information analysis
+    _analyzeContactInfo(contactNumber, name, analysis);
+
+    // Layer 5: Behavioral analysis (frequency, timing)
+    await _analyzeBehavior(incidentData, analysis);
+
+    // Layer 6: Text pattern analysis
+    _analyzeTextPatterns(description, analysis);
+
+    // EMERGENCY-SAFE: Lower scores might still be legitimate emergencies
+    // Only classify as spam if we have strong evidence
+    return analysis;
+  }
+
+  static bool _hasHighConfidenceSpamSignals(String description, String contactNumber, String incidentType) {
+    // Only classify as HIGH confidence spam if we have multiple strong signals
+    int highConfidenceSignals = 0;
+    
+    // 1. Clear commercial spam with URLs
+    final commercialPatterns = ['buy now', 'click here', 'make money', 'free money', 'earn money', 'work from home', 'get rich', 'investment'];
+    for (final pattern in commercialPatterns) {
+      if (description.contains(pattern)) {
+        highConfidenceSignals++;
+        break;
+      }
+    }
+    
+    // 2. Multiple spam keywords in description
+    final spamKeywordsFound = SpamDetectionService._spamPatterns.where((pattern) => description.contains(pattern)).length;
+    if (spamKeywordsFound >= 3) {
+      highConfidenceSignals++;
+    }
+    
+    // 3. Clearly fake contact information
+    if (contactNumber.length < 5 || 
+        ['0000000000', '1234567890', '1111111111'].contains(contactNumber)) {
+      highConfidenceSignals++;
+    }
+    
+    // 4. Test/demo incident types with suspicious content
+    if (['test', 'demo', 'sample', 'fake'].contains(incidentType) && description.length < 20) {
+      highConfidenceSignals++;
+    }
+    
+    // Require at least 2 high-confidence signals to avoid false positives
+    return highConfidenceSignals >= 2;
+  }
+
+  static void _analyzeContent(String description, SpamAnalysisResult analysis) {
+    // Check for spam patterns
+    for (final pattern in _spamPatterns) {
+      if (description.contains(pattern)) {
+        analysis.addReason('Contains spam keyword: "$pattern"', 2); // Reduced from 3 to 2
+        break;
+      }
+    }
+
+    // URL detection
+    if (_urlRegex.hasMatch(description)) {
+      analysis.addReason('Contains URLs/links', 2); // Reduced from 3 to 2
+    }
+
+    // Description length analysis
+    if (description.length < 10) {
+      analysis.addReason('Very short description', 1);
+    } else if (description.length > 500) {
+      analysis.addReason('Excessively long description', 1);
+    }
+  }
+
+  static void _analyzeIncidentType(String incidentType, SpamAnalysisResult analysis) {
+    if (incidentType.isEmpty) {
+      analysis.addReason('Empty incident type', 2);
+      return;
+    }
+
+    // Direct suspicious type match
+    for (final suspiciousType in _suspiciousTypes) {
+      if (incidentType.contains(suspiciousType)) {
+        analysis.addReason('Suspicious incident type: "$suspiciousType"', 2); // Reduced from 3 to 2
+        return;
+      }
+    }
+
+    // Fuzzy matching for misspelled types
+    for (final pattern in _misspellingPatterns) {
+      if (pattern.hasMatch(incidentType)) {
+        analysis.addReason('Misspelled suspicious incident type: "$incidentType"', 1); // Reduced from 2 to 1
+        return;
+      }
+    }
+  }
+
+  static void _analyzeContactInfo(String contactNumber, String name, SpamAnalysisResult analysis) {
+    // Contact number analysis
+    if (contactNumber.length < 5) {
+      analysis.addReason('Invalid contact number (too short)', 2); // Reduced from 3 to 2
+    } else if (_suspiciousContacts.contains(contactNumber)) {
+      analysis.addReason('Suspicious contact number', 2); // Reduced from 3 to 2
+    } else if (contactNumber.contains('123') && contactNumber.length <= 6) {
+      analysis.addReason('Pattern-based suspicious contact number', 1); // Reduced from 2 to 1
+    }
+
+    // Name analysis
+    if (_suspiciousNames.contains(name)) {
+      analysis.addReason('Suspicious name: "$name"', 1); // Reduced from 2 to 1
+    }
+  }
+
+  static void _analyzeLocation(String address, String landmark, SpamAnalysisResult analysis) {
+    for (final suspiciousLocation in _suspiciousLocations) {
+      if (address.contains(suspiciousLocation) || landmark.contains(suspiciousLocation)) {
+        analysis.addReason('Suspicious location/landmark', 1);
+        break;
+      }
+    }
+  }
+
+  static Future<void> _analyzeBehavior(Map<String, dynamic> incidentData, SpamAnalysisResult analysis) async {
+    try {
+      final supabase = Supabase.instance.client;
+      final contactNumber = incidentData['contact_number']?.toString();
+      
+      if (contactNumber == null || contactNumber.isEmpty) return;
+
+      // Check for recent incidents from same contact
+      final recentIncidents = await supabase
+          .from('incidents')
+          .select()
+          .eq('contact_number', contactNumber)
+          .gte('created_at', 
+              DateTime.now().subtract(const Duration(minutes: 30)).toIso8601String())
+          .limit(5);
+
+      if (recentIncidents.length >= 3) {
+        analysis.addReason('Multiple reports from same number in 30 minutes (${recentIncidents.length})', 2); // Reduced from 3 to 2
+      }
+
+      // Check for similar content
+      final description = (incidentData['description'] ?? '').toString();
+      if (description.length > 20) {
+        final similarIncidents = await supabase
+            .from('incidents')
+            .select()
+            .ilike('description', '%${description.substring(0, 20)}%')
+            .gte('created_at', 
+                DateTime.now().subtract(const Duration(hours: 1)).toIso8601String())
+            .limit(3);
+
+        if (similarIncidents.length >= 2) {
+          analysis.addReason('Similar descriptions reported recently', 2); // Reduced from 3 to 2
+        }
+      }
+    } catch (e) {
+      debugPrint('Behavioral analysis error: $e');
+    }
+  }
+
+  static void _analyzeTextPatterns(String description, SpamAnalysisResult analysis) {
+    if (description.isEmpty) return;
+
+    // Repetition analysis
+    final words = description.split(' ');
+    final uniqueWords = Set<String>.from(words);
+    final repetitionRatio = uniqueWords.length / (words.length > 0 ? words.length : 1);
+    if (repetitionRatio < 0.3 && words.length > 20) {
+      analysis.addReason('High content repetition detected', 1); // Reduced from 2 to 1
+    }
+
+    // Special character analysis
+    final specialCharCount = _specialCharRegex.allMatches(description).length;
+    if (specialCharCount > 10) {
+      analysis.addReason('Excessive special characters', 1);
+    }
+
+    // ALL CAPS detection
+    final upperCaseRatio = description.replaceAll(RegExp(r'[^A-Z]'), '').length / 
+                          (description.length > 0 ? description.length : 1);
+    if (upperCaseRatio > 0.7 && description.length > 20) {
+      analysis.addReason('Excessive uppercase text', 1);
+    }
+  }
+}
+
+// Spam Analysis Result Class
+class SpamAnalysisResult {
+  int score = 0;
+  List<String> reasons = [];
+  bool get isSpam => score >= 8; // Higher threshold for emergencies
+
+  void addReason(String reason, int points) {
+    reasons.add(reason);
+    score += points;
+  }
+
+  @override
+  String toString() {
+    return 'SpamAnalysisResult(score: $score, isSpam: $isSpam, reasons: $reasons)';
+  }
+}
+
 class IncidentData {
   final String id;
   final String? incidentType;
@@ -67,8 +332,11 @@ class IncidentData {
   final List<dynamic> imageUrls;
   final DateTime? createdAt;
   final DateTime? updatedAt;
-  final String? latestStatus; // For real-time status updates
-  final DateTime? statusUpdatedAt; // For real-time status updates
+  final String? latestStatus;
+  final DateTime? statusUpdatedAt;
+  final bool? isSpam; // ADD THIS
+  final int? spamScore; // ADD THIS
+  final List<dynamic>? spamReasons; // ADD THIS
 
   IncidentData({
     required this.id,
@@ -85,6 +353,9 @@ class IncidentData {
     this.updatedAt,
     this.latestStatus,
     this.statusUpdatedAt,
+    this.isSpam, // ADD THIS
+    this.spamScore, // ADD THIS
+    this.spamReasons, // ADD THIS
   });
 
   factory IncidentData.fromMap(Map<String, dynamic> data, String id) {
@@ -111,10 +382,12 @@ class IncidentData {
       statusUpdatedAt: data['status_updated_at'] != null 
           ? DateTime.parse(data['status_updated_at'])
           : null,
+      isSpam: data['is_spam'] as bool? ?? false, // ADD THIS
+      spamScore: data['spam_score'] as int? ?? 0, // ADD THIS
+      spamReasons: data['spam_reasons'] as List<dynamic>? ?? [], // ADD THIS
     );
   }
 
-  // Helper to get the effective status (prefer latest_status from real-time updates)
   String get effectiveStatus => latestStatus ?? status;
 }
 
@@ -190,52 +463,67 @@ class IncidentService {
     }
   }
 
-  // Add to IncidentService class - Spam Filter Methods
+  // Enhanced Spam Detection Methods
   static Future<bool> isSpamIncident(Map<String, dynamic> incidentData) async {
     try {
-      final supabase = Supabase.instance.client;
+      final analysis = await SpamDetectionService.analyzeIncident(incidentData);
       
-      // Check 1: Recent duplicate incidents from same reporter
-      final recentIncidents = await supabase
-          .from('incidents')
-          .select()
-          .eq('contact_number', incidentData['contact_number'])
-          .gte('created_at', 
-              DateTime.now().subtract(const Duration(minutes: 30)).toIso8601String())
-          .limit(5);
-
-      if (recentIncidents.length >= 3) {
-        return true; // Too many incidents in short time
+      // HIGHER THRESHOLD FOR EMERGENCY CONTEXTS
+      // Only classify as spam if we have very strong evidence
+      final bool isSpam = analysis.score >= 8; // Increased from 5 to 8 for emergencies
+      
+      if (isSpam) {
+        debugPrint('🚫 SPAM DETECTED - Score: ${analysis.score} (Threshold: 8)');
+        debugPrint('   Reasons: ${analysis.reasons.join(", ")}');
+        debugPrint('   Contact: ${incidentData['contact_number']}, Type: ${incidentData['incident_type']}');
+        
+        // Log spam attempt for future analysis
+        await _logSpamAttempt(incidentData, analysis);
+        return true;
+      } else if (analysis.score >= 5) {
+        // SUSPICIOUS but not definite spam - log for review but don't block
+        debugPrint('⚠️ SUSPICIOUS INCIDENT - Score: ${analysis.score}');
+        debugPrint('   Reasons: ${analysis.reasons.join(", ")}');
+        await _logSuspiciousIncident(incidentData, analysis);
       }
-
-      // Check 2: Similar content detection
-      final description = incidentData['description']?.toString() ?? '';
-      if (description.length > 20) {
-        final similarIncidents = await supabase
-            .from('incidents')
-            .select()
-            .ilike('description', '%${description.substring(0, 20)}%')
-            .gte('created_at', 
-                DateTime.now().subtract(const Duration(hours: 1)).toIso8601String())
-            .limit(3);
-
-        if (similarIncidents.length >= 2) {
-          return true; // Similar descriptions recently
-        }
-      }
-
-      // Check 3: Check against spam patterns
-      final descLower = description.toLowerCase();
-      for (final pattern in IncidentReportConstants.spamPatterns) {
-        if (descLower.contains(pattern)) {
-          return true;
-        }
-      }
-
+      
       return false;
     } catch (e) {
       debugPrint('Spam check error: $e');
-      return false; // Default to not spam if check fails
+      return false; // Default to not spam if check fails - SAFER FOR EMERGENCIES
+    }
+  }
+
+  static Future<void> _logSuspiciousIncident(Map<String, dynamic> incidentData, SpamAnalysisResult analysis) async {
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase.from('suspicious_incidents').insert({
+        'contact_number': incidentData['contact_number'],
+        'incident_type': incidentData['incident_type'],
+        'description_preview': (incidentData['description']?.toString() ?? '').substring(0, 100),
+        'spam_score': analysis.score,
+        'reasons': analysis.reasons.join('; '),
+        'created_at': DateTime.now().toIso8601String(),
+        'status': 'review_needed', // Mark for moderator review
+      });
+    } catch (e) {
+      debugPrint('Failed to log suspicious incident: $e');
+    }
+  }
+
+  static Future<void> _logSpamAttempt(Map<String, dynamic> incidentData, SpamAnalysisResult analysis) async {
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase.from('spam_attempts').insert({
+        'contact_number': incidentData['contact_number'],
+        'incident_type': incidentData['incident_type'],
+        'description_length': (incidentData['description']?.toString() ?? '').length,
+        'spam_score': analysis.score,
+        'reasons': analysis.reasons.join('; '),
+        'created_at': DateTime.now().toIso8601String(),
+      });
+    } catch (e) {
+      debugPrint('Failed to log spam attempt: $e');
     }
   }
 
@@ -500,16 +788,32 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
   StreamSubscription? _incidentsSubscription;
   StreamSubscription? _statusUpdatesSubscription;
 
+  // Add these new variables
+  bool _isInitialLoad = true;
+  bool _hasReceivedData = false;
+  DateTime? _lastDataReceivedTime;
+  Timer? _initialLoadTimer;
+
   @override
   void initState() {
     super.initState();
     _initializeControllers();
     _setupAnimations();
     _setupRealTimeSubscriptions();
+    
+    // Set a timeout for initial load
+    _initialLoadTimer = Timer(const Duration(seconds: 10), () {
+      if (mounted && _isInitialLoad) {
+        setState(() {
+          _isInitialLoad = false;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    _initialLoadTimer?.cancel();
     _disposeControllers();
     super.dispose();
   }
@@ -545,10 +849,13 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     _incidentsSubscription = IncidentService.getIncidentsStream()
         .handleError((error) {
       debugPrint('❌ Incidents stream error: $error');
-      // Reconnect after delay with exponential backoff
-      Future.delayed(const Duration(seconds: 5), () {
-        if (mounted) _setupIncidentsSubscription();
-      });
+      if (mounted) {
+        setState(() {
+          _isInitialLoad = false;
+          _hasReceivedData = false;
+        });
+        _incidentsController.add([]); // Add empty data to show empty state
+      }
     }).listen(_handleIncidentsUpdate, cancelOnError: false);
   }
 
@@ -565,72 +872,92 @@ class _IncidentReportScreenState extends State<IncidentReportScreen>
     }).listen(_handleStatusUpdates, cancelOnError: false);
   }
 
-// Fix the _handleIncidentsUpdate method to properly handle DELETE events
-void _handleIncidentsUpdate(List<Map<String, dynamic>> incidents) {
-  debugPrint('🔄 Received ${incidents.length} incidents from stream');
-  
-  bool hasChanges = false;
-  
-  for (final incident in incidents) {
-    // Handle different event types from Supabase real-time
-    final eventType = incident['type'] as String?;
-    final newData = incident['new'] as Map<String, dynamic>?;
-    final oldData = incident['old'] as Map<String, dynamic>?;
-
-    switch (eventType) {
-      case 'INSERT':
-        if (newData != null) {
-          final id = newData['id'].toString();
-          _incidentsMap[id] = newData;
-          hasChanges = true;
-          _hasNewUpdates = true;
-          debugPrint('➕ New incident: $id');
-        }
-        break;
-      case 'UPDATE':
-        if (newData != null) {
-          final id = newData['id'].toString();
-          _incidentsMap[id] = {
-            ..._incidentsMap[id] ?? {},
-            ...newData,
-          };
-          hasChanges = true;
-          debugPrint('✏️ Updated incident: $id');
-        }
-        break;
-      case 'DELETE':
-        if (oldData != null) {
-          final id = oldData['id'].toString();
-          _incidentsMap.remove(id);
-          hasChanges = true;
-          debugPrint('🗑️ Deleted incident: $id');
-          
-          // Also remove from selection if it was selected
-          if (_selectedIncidents.contains(id)) {
-            _selectedIncidents.remove(id);
-          }
-        }
-        break;
-      default:
-        // Initial data or full refresh - handle as INSERT
-        final id = incident['id'].toString();
-        _incidentsMap[id] = incident;
-        hasChanges = true;
-    }
-  }
-
-  if (hasChanges && mounted) {
-    _notifyDataUpdate();
-    debugPrint('📊 Total incidents in map: ${_incidentsMap.length}');
+  void _handleIncidentsUpdate(List<Map<String, dynamic>> incidents) {
+    debugPrint('🔄 Received ${incidents.length} incidents from stream');
     
-    // Exit multi-select mode if no incidents are selected
-    if (_selectedIncidents.isEmpty && _isMultiSelectMode) {
+    // Mark that we've received data
+    if (mounted) {
       setState(() {
-        _isMultiSelectMode = false;
+        _isInitialLoad = false;
+        _hasReceivedData = true;
+        _lastDataReceivedTime = DateTime.now();
       });
     }
+    
+    bool hasChanges = false;
+    
+    // Handle empty data case
+    if (incidents.isEmpty) {
+      if (_incidentsMap.isNotEmpty) {
+        _incidentsMap.clear();
+        hasChanges = true;
+        debugPrint('📭 All incidents cleared - no data received');
+      } else if (_hasReceivedData) {
+        // Only log if we previously had data
+        debugPrint('📭 Stream returned empty data');
+      }
+    } else {
+      // Process incidents as before
+      for (final incident in incidents) {
+        final eventType = incident['type'] as String?;
+        final newData = incident['new'] as Map<String, dynamic>?;
+        final oldData = incident['old'] as Map<String, dynamic>?;
+
+        switch (eventType) {
+          case 'INSERT':
+            if (newData != null) {
+              final id = newData['id'].toString();
+              _incidentsMap[id] = newData;
+              hasChanges = true;
+              _hasNewUpdates = true;
+              debugPrint('➕ New incident: $id');
+            }
+            break;
+          case 'UPDATE':
+            if (newData != null) {
+              final id = newData['id'].toString();
+              _incidentsMap[id] = {
+                ..._incidentsMap[id] ?? {},
+                ...newData,
+              };
+              hasChanges = true;
+              debugPrint('✏️ Updated incident: $id');
+            }
+            break;
+          case 'DELETE':
+            if (oldData != null) {
+              final id = oldData['id'].toString();
+              _incidentsMap.remove(id);
+              hasChanges = true;
+              debugPrint('🗑️ Deleted incident: $id');
+              
+              if (_selectedIncidents.contains(id)) {
+                _selectedIncidents.remove(id);
+              }
+            }
+            break;
+          default:
+            // Handle initial data load
+            final id = incident['id'].toString();
+            if (!_incidentsMap.containsKey(id)) {
+              _incidentsMap[id] = incident;
+              hasChanges = true;
+            }
+        }
+      }
+    }
+
+    if (hasChanges && mounted) {
+      _notifyDataUpdate();
+      debugPrint('📊 Total incidents in map: ${_incidentsMap.length}');
+      
+      if (_selectedIncidents.isEmpty && _isMultiSelectMode) {
+        setState(() {
+          _isMultiSelectMode = false;
+        });
+      }
+    }
   }
-}
 
   void _handleStatusUpdates(List<Map<String, dynamic>> statusUpdates) {
     debugPrint('🔄 Received ${statusUpdates.length} status updates from stream');
@@ -739,73 +1066,72 @@ void _handleIncidentsUpdate(List<Map<String, dynamic>> incidents) {
   }
 
   // Delete Operations
-// Replace the _deleteIncident method with this fixed version
-Future<void> _deleteIncident(String id, {bool showUndo = true}) async {
-  try {
-    // Store the incident data for potential undo BEFORE deleting
-    final incidentData = _incidentsMap[id]?.cast<String, dynamic>();
-    
-    // Delete from database first
-    await IncidentService.deleteIncident(id);
-    
-    // The real-time subscription will automatically remove it from _incidentsMap
-    // and trigger a UI update via _handleIncidentsUpdate
-    
-    if (showUndo && mounted && incidentData != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Incident deleted'),
-          backgroundColor: Colors.red,
-          action: SnackBarAction(
-            label: 'UNDO',
-            textColor: Colors.white,
-            onPressed: () => _undoDelete(id, incidentData),
+  Future<void> _deleteIncident(String id, {bool showUndo = true}) async {
+    try {
+      // Store the incident data for potential undo BEFORE deleting
+      final incidentData = _incidentsMap[id]?.cast<String, dynamic>();
+      
+      // Delete from database first
+      await IncidentService.deleteIncident(id);
+      
+      // The real-time subscription will automatically remove it from _incidentsMap
+      // and trigger a UI update via _handleIncidentsUpdate
+      
+      if (showUndo && mounted && incidentData != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Incident deleted'),
+            backgroundColor: Colors.red,
+            action: SnackBarAction(
+              label: 'UNDO',
+              textColor: Colors.white,
+              onPressed: () => _undoDelete(id, incidentData),
+            ),
+            duration: const Duration(seconds: 5),
           ),
-          duration: const Duration(seconds: 5),
-        ),
-      );
-    }
-  } catch (e) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to delete: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
-}
 
-// Fix the _undoDelete method
-Future<void> _undoDelete(String id, Map<String, dynamic> data) async {
-  try {
-    // Re-insert the incident with its original data
-    await Supabase.instance.client
-        .from('incidents')
-        .insert(data);
-    
-    // The real-time subscription will automatically add it back to _incidentsMap
-    
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Incident restored'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    }
-  } catch (e) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to restore: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+  // Fix the _undoDelete method
+  Future<void> _undoDelete(String id, Map<String, dynamic> data) async {
+    try {
+      // Re-insert the incident with its original data
+      await Supabase.instance.client
+          .from('incidents')
+          .insert(data);
+      
+      // The real-time subscription will automatically add it back to _incidentsMap
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Incident restored'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to restore: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
-}
 
   // Batch Operations
   Future<void> _batchUpdateStatus(String status) async {
@@ -830,81 +1156,175 @@ Future<void> _undoDelete(String id, Map<String, dynamic> data) async {
     }
   }
 
-Future<void> _showBatchDeleteConfirmation() async {
-  final confirmed = await _showConfirmationDialog(
-    title: 'Confirm Batch Delete',
-    content:
-        'Are you sure you want to delete ${_selectedIncidents.length} incidents? This action cannot be undone.',
-    confirmText: 'Delete',
-    confirmColor: IncidentReportConstants.colorScheme['error']!,
-  );
+  Future<void> _showBatchDeleteConfirmation() async {
+    final confirmed = await _showConfirmationDialog(
+      title: 'Confirm Batch Delete',
+      content:
+          'Are you sure you want to delete ${_selectedIncidents.length} incidents? This action cannot be undone.',
+      confirmText: 'Delete',
+      confirmColor: IncidentReportConstants.colorScheme['error']!,
+    );
 
-  if (confirmed != true) return;
+    if (confirmed != true) return;
 
-  // Store incidents data for undo BEFORE deleting
-  final incidentsToDelete = <String, Map<String, dynamic>>{};
-  for (final id in _selectedIncidents) {
-    final incidentData = _incidentsMap[id]?.cast<String, dynamic>();
-    if (incidentData != null) {
-      incidentsToDelete[id] = incidentData;
+    // Store incidents data for undo BEFORE deleting
+    final incidentsToDelete = <String, Map<String, dynamic>>{};
+    for (final id in _selectedIncidents) {
+      final incidentData = _incidentsMap[id]?.cast<String, dynamic>();
+      if (incidentData != null) {
+        incidentsToDelete[id] = incidentData;
+      }
     }
-  }
 
-  try {
-    await IncidentService.batchDeleteIncidents(_selectedIncidents);
-    
-    // The real-time subscriptions will automatically update the UI
+    try {
+      await IncidentService.batchDeleteIncidents(_selectedIncidents);
+      
+      // The real-time subscriptions will automatically update the UI
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Deleted ${_selectedIncidents.length} incidents'),
-          backgroundColor: IncidentReportConstants.colorScheme['error'],
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          action: SnackBarAction(
-            label: 'UNDO',
-            textColor: Colors.white,
-            onPressed: () => _undoBatchDelete(incidentsToDelete),
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Deleted ${_selectedIncidents.length} incidents'),
+            backgroundColor: IncidentReportConstants.colorScheme['error'],
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            action: SnackBarAction(
+              label: 'UNDO',
+              textColor: Colors.white,
+              onPressed: () => _undoBatchDelete(incidentsToDelete),
+            ),
+            duration: const Duration(seconds: 5),
           ),
-          duration: const Duration(seconds: 5),
-        ),
-      );
-    }
+        );
+      }
 
-    _clearSelection();
-  } catch (e) {
-    _showErrorSnackbar('Failed to delete: $e');
+      _clearSelection();
+    } catch (e) {
+      _showErrorSnackbar('Failed to delete: $e');
+    }
   }
-}
 
+  Future<void> _undoBatchDelete(Map<String, Map<String, dynamic>> incidents) async {
+    if (incidents.isEmpty) return;
 
-Future<void> _undoBatchDelete(Map<String, Map<String, dynamic>> incidents) async {
-  if (incidents.isEmpty) return;
+    try {
+      // Re-insert all incidents
+      for (final entry in incidents.entries) {
+        await Supabase.instance.client
+            .from('incidents')
+            .insert(entry.value);
+      }
+      
+      // The real-time subscriptions will automatically update the UI
 
-  try {
-    // Re-insert all incidents
-    for (final entry in incidents.entries) {
-      await Supabase.instance.client
-          .from('incidents')
-          .insert(entry.value);
+      if (mounted) {
+        _showSuccessSnackbar('Incidents restored');
+      }
+    } catch (e) {
+      _showErrorSnackbar('Failed to restore: $e');
     }
-    
-    // The real-time subscriptions will automatically update the UI
-
-    if (mounted) {
-      _showSuccessSnackbar('Incidents restored');
-    }
-  } catch (e) {
-    _showErrorSnackbar('Failed to restore: $e');
   }
-}
 
   void _clearSelection() {
     setState(() {
       _selectedIncidents.clear();
       _isMultiSelectMode = false;
     });
+  }
+
+  // Quick spam analysis for filtering (optimized performance)
+  SpamAnalysisResult _performQuickSpamAnalysis(Map<String, dynamic> doc) {
+    final analysis = SpamAnalysisResult();
+    final description = (doc['description'] ?? '').toString().toLowerCase();
+    final contactNumber = (doc['contact_number'] ?? '').toString();
+    final name = (doc['name'] ?? '').toString().toLowerCase();
+    final incidentType = (doc['incident_type'] ?? '').toString().toLowerCase();
+    
+    // Quick content check
+    for (final pattern in SpamDetectionService._spamPatterns.take(10)) { // Check first 10 patterns
+      if (description.contains(pattern)) {
+        analysis.addReason('Spam keyword: "$pattern"', 2);
+        break;
+      }
+    }
+    
+    // Quick incident type check
+    for (final suspiciousType in SpamDetectionService._suspiciousTypes.take(10)) {
+      if (incidentType.contains(suspiciousType)) {
+        analysis.addReason('Suspicious type: "$suspiciousType"', 2);
+        break;
+      }
+    }
+    
+    // Quick contact check
+    if (contactNumber.length < 5 || SpamDetectionService._suspiciousContacts.contains(contactNumber)) {
+      analysis.addReason('Suspicious contact', 2);
+    }
+    
+    // Quick name check
+    if (SpamDetectionService._suspiciousNames.contains(name)) {
+      analysis.addReason('Suspicious name', 1);
+    }
+    
+    return analysis;
+  }
+
+  // Comprehensive spam analysis for existing incidents (more thorough than quick analysis)
+  SpamAnalysisResult _performComprehensiveSpamAnalysis(Map<String, dynamic> doc) {
+    final analysis = SpamAnalysisResult();
+    final description = (doc['description'] ?? '').toString().toLowerCase();
+    final contactNumber = (doc['contact_number'] ?? '').toString();
+    final name = (doc['name'] ?? '').toString().toLowerCase();
+    final incidentType = (doc['incident_type'] ?? '').toString().toLowerCase();
+    final address = (doc['address'] ?? '').toString().toLowerCase();
+    final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
+
+    // Check all spam patterns (not just first 10)
+    for (final pattern in SpamDetectionService._spamPatterns) {
+      if (description.contains(pattern)) {
+        analysis.addReason('Spam keyword: "$pattern"', 2); // Lower score for existing incidents
+        break;
+      }
+    }
+
+    // Check all suspicious types
+    for (final suspiciousType in SpamDetectionService._suspiciousTypes) {
+      if (incidentType.contains(suspiciousType)) {
+        analysis.addReason('Suspicious type: "$suspiciousType"', 2);
+        break;
+      }
+    }
+
+    // Contact checks
+    if (contactNumber.length < 5) {
+      analysis.addReason('Invalid contact number', 2);
+    }
+    if (SpamDetectionService._suspiciousContacts.contains(contactNumber)) {
+      analysis.addReason('Suspicious contact number', 2);
+    }
+
+    // Name checks
+    if (SpamDetectionService._suspiciousNames.contains(name)) {
+      analysis.addReason('Suspicious name', 1);
+    }
+
+    // Location checks
+    for (final suspiciousLocation in SpamDetectionService._suspiciousLocations) {
+      if (address.contains(suspiciousLocation) || landmark.contains(suspiciousLocation)) {
+        analysis.addReason('Suspicious location', 1);
+        break;
+      }
+    }
+
+    // Content quality checks
+    if (description.length < 10) {
+      analysis.addReason('Very short description', 1);
+    }
+    if (description.length > 1000) {
+      analysis.addReason('Excessively long description', 1);
+    }
+
+    return analysis;
   }
 
   // UI Components
@@ -1021,42 +1441,42 @@ Future<void> _undoBatchDelete(Map<String, Map<String, dynamic>> incidents) async
     );
   }
 
-Widget _buildFilterSection() {
-  return Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: [
-          _buildFilterChip(
-            label: 'Recent',
-            selected: _selectedFilter == 'recent',
-            onSelected: () => setState(() {
-              _selectedFilter = 'recent';
-              _selectedDate = null;
-            }),
-          ),
-          _buildFilterChip(
-            label: 'All Reports',
-            selected: _selectedFilter == 'all',
-            onSelected: () => setState(() => _selectedFilter = 'all'),
-          ),
-          _buildFilterChip(
-            label: 'Spam Reports',
-            selected: _selectedFilter == 'spam',
-            onSelected: () => setState(() {
-              _selectedFilter = 'spam';
-              _selectedDate = null;
-            }),
-          ),
-          if (_selectedFilter == 'all')
-            _buildDateFilterChip(),
-        ],
-      ),
-    ],
-  );
-}
+  Widget _buildFilterSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _buildFilterChip(
+              label: 'Recent',
+              selected: _selectedFilter == 'recent',
+              onSelected: () => setState(() {
+                _selectedFilter = 'recent';
+                _selectedDate = null;
+              }),
+            ),
+            _buildFilterChip(
+              label: 'All Reports',
+              selected: _selectedFilter == 'all',
+              onSelected: () => setState(() => _selectedFilter = 'all'),
+            ),
+            _buildFilterChip(
+              label: 'Spam Reports',
+              selected: _selectedFilter == 'spam',
+              onSelected: () => setState(() {
+                _selectedFilter = 'spam';
+                _selectedDate = null;
+              }),
+            ),
+            if (_selectedFilter == 'all')
+              _buildDateFilterChip(),
+          ],
+        ),
+      ],
+    );
+  }
 
   Widget _buildFilterChip({
     required String label,
@@ -1075,130 +1495,130 @@ Widget _buildFilterSection() {
     );
   }
 
- Widget _buildDateFilterChip() {
-  final isSingleDateSelected = _selectedDate != null;
-  final isRangeSelected = _selectedDateRange != null;
-  final isAnyDateSelected = isSingleDateSelected || isRangeSelected;
-  
-  String getDateLabel() {
-    if (isRangeSelected) {
-      final start = DateFormat('MMM d').format(_selectedDateRange!.start);
-      final end = DateFormat('MMM d').format(_selectedDateRange!.end);
-      return '$start - $end';
-    } else if (isSingleDateSelected) {
-      return DateFormat('MMM d').format(_selectedDate!);
-    } else {
-      return "Date Range";
-    }
-  }
-
-  return FilterChip(
-    label: Container(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            isAnyDateSelected ? Icons.calendar_month_rounded : Icons.calendar_today_rounded,
-            size: 16,
-            color: isAnyDateSelected ? Colors.white : IncidentReportConstants.colorScheme['primary'],
-          ),
-          const SizedBox(width: 6),
-          Text(
-            getDateLabel(),
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-              color: isAnyDateSelected ? Colors.white : Colors.black87,
-            ),
-          ),
-          if (isAnyDateSelected) ...[
-            const SizedBox(width: 6),
-            Container(
-              width: 18,
-              height: 18,
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.3),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                Icons.close_rounded,
-                size: 12,
-                color: Colors.white,
-              ),
-            ),
-          ],
-        ],
-      ),
-    ),
-    selected: isAnyDateSelected,
-    onSelected: (_) async {
-      if (isAnyDateSelected) {
-        // Clear date selection
-        setState(() {
-          _selectedDate = null;
-          _selectedDateRange = null;
-        });
+  Widget _buildDateFilterChip() {
+    final isSingleDateSelected = _selectedDate != null;
+    final isRangeSelected = _selectedDateRange != null;
+    final isAnyDateSelected = isSingleDateSelected || isRangeSelected;
+    
+    String getDateLabel() {
+      if (isRangeSelected) {
+        final start = DateFormat('MMM d').format(_selectedDateRange!.start);
+        final end = DateFormat('MMM d').format(_selectedDateRange!.end);
+        return '$start - $end';
+      } else if (isSingleDateSelected) {
+        return DateFormat('MMM d').format(_selectedDate!);
       } else {
-        // Show date range picker
-        final DateTimeRange? pickedRange = await showDateRangePicker(
-          context: context,
-          firstDate: DateTime(2000),
-          lastDate: DateTime.now(),
-          currentDate: DateTime.now(),
-          saveText: 'Apply',
-          helpText: 'Select Date Range',
-          confirmText: 'Apply',
-          cancelText: 'Cancel',
-          initialDateRange: _selectedDateRange,
-          initialEntryMode: DatePickerEntryMode.calendar,
-          builder: (context, child) {
-            return Theme(
-              data: Theme.of(context).copyWith(
-                colorScheme: ColorScheme.light(
-                  primary: IncidentReportConstants.colorScheme['primary']!,
-                  onPrimary: Colors.white,
-                  onSurface: Colors.black87,
+        return "Date Range";
+      }
+    }
+
+    return FilterChip(
+      label: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isAnyDateSelected ? Icons.calendar_month_rounded : Icons.calendar_today_rounded,
+              size: 16,
+              color: isAnyDateSelected ? Colors.white : IncidentReportConstants.colorScheme['primary'],
+            ),
+            const SizedBox(width: 6),
+            Text(
+              getDateLabel(),
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: isAnyDateSelected ? Colors.white : Colors.black87,
+              ),
+            ),
+            if (isAnyDateSelected) ...[
+              const SizedBox(width: 6),
+              Container(
+                width: 18,
+                height: 18,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.3),
+                  shape: BoxShape.circle,
                 ),
-                textButtonTheme: TextButtonThemeData(
-                  style: TextButton.styleFrom(
-                    foregroundColor: IncidentReportConstants.colorScheme['primary']!,
+                child: Icon(
+                  Icons.close_rounded,
+                  size: 12,
+                  color: Colors.white,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      selected: isAnyDateSelected,
+      onSelected: (_) async {
+        if (isAnyDateSelected) {
+          // Clear date selection
+          setState(() {
+            _selectedDate = null;
+            _selectedDateRange = null;
+          });
+        } else {
+          // Show date range picker
+          final DateTimeRange? pickedRange = await showDateRangePicker(
+            context: context,
+            firstDate: DateTime(2000),
+            lastDate: DateTime.now(),
+            currentDate: DateTime.now(),
+            saveText: 'Apply',
+            helpText: 'Select Date Range',
+            confirmText: 'Apply',
+            cancelText: 'Cancel',
+            initialDateRange: _selectedDateRange,
+            initialEntryMode: DatePickerEntryMode.calendar,
+            builder: (context, child) {
+              return Theme(
+                data: Theme.of(context).copyWith(
+                  colorScheme: ColorScheme.light(
+                    primary: IncidentReportConstants.colorScheme['primary']!,
+                    onPrimary: Colors.white,
+                    onSurface: Colors.black87,
+                  ),
+                  textButtonTheme: TextButtonThemeData(
+                    style: TextButton.styleFrom(
+                      foregroundColor: IncidentReportConstants.colorScheme['primary']!,
+                    ),
                   ),
                 ),
-              ),
-              child: child!,
-            );
-          },
-        );
+                child: child!,
+              );
+            },
+          );
 
-        if (pickedRange != null) {
-          setState(() {
-            _selectedDateRange = pickedRange;
-            _selectedDate = null; // Clear single date selection
-          });
+          if (pickedRange != null) {
+            setState(() {
+              _selectedDateRange = pickedRange;
+              _selectedDate = null; // Clear single date selection
+            });
+          }
         }
-      }
-    },
-    selectedColor: IncidentReportConstants.colorScheme['primary'],
-    checkmarkColor: Colors.transparent,
-    backgroundColor: Colors.white,
-    shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(20),
-      side: BorderSide(
-        color: isAnyDateSelected 
-            ? IncidentReportConstants.colorScheme['primary']!
-            : Colors.grey.shade300,
-        width: isAnyDateSelected ? 0 : 1.5,
+      },
+      selectedColor: IncidentReportConstants.colorScheme['primary'],
+      checkmarkColor: Colors.transparent,
+      backgroundColor: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(
+          color: isAnyDateSelected 
+              ? IncidentReportConstants.colorScheme['primary']!
+              : Colors.grey.shade300,
+          width: isAnyDateSelected ? 0 : 1.5,
+        ),
       ),
-    ),
-    elevation: isAnyDateSelected ? 2 : 0,
-    shadowColor: IncidentReportConstants.colorScheme['primary']!.withOpacity(0.3),
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-    labelStyle: TextStyle(
-      color: isAnyDateSelected ? Colors.white : Colors.black87,
-    ),
-  );
-}
+      elevation: isAnyDateSelected ? 2 : 0,
+      shadowColor: IncidentReportConstants.colorScheme['primary']!.withOpacity(0.3),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      labelStyle: TextStyle(
+        color: isAnyDateSelected ? Colors.white : Colors.black87,
+      ),
+    );
+  }
 
   Widget _buildBatchActions() {
     return AnimatedContainer(
@@ -1259,51 +1679,107 @@ Widget _buildFilterSection() {
     );
   }
 
-  Widget _buildEmergencyList() {
-    return StreamBuilder<List<Map<String, dynamic>>>(
-      stream: _incidentsController.stream,
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return _buildErrorState(snapshot.error.toString());
-        }
+ Widget _buildEmergencyList() {
+  return StreamBuilder<List<Map<String, dynamic>>>(
+    stream: _incidentsController.stream,
+    builder: (context, snapshot) {
+      // Handle connection state
+      if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
+        return _buildLoadingState();
+      }
 
-        if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
-          return _buildLoadingState();
-        }
+      if (snapshot.hasError) {
+        return _buildErrorState(snapshot.error.toString());
+      }
 
-        if (!snapshot.hasData || snapshot.data!.isEmpty) {
-          return _buildEmptyState();
-        }
+      // Handle no data scenarios - SIMPLIFIED like your reference code
+      final hasData = snapshot.hasData;
+      final data = snapshot.data;
+      
+      if (!hasData || data == null || data.isEmpty) {
+        return _buildEmptyState();
+      }
 
-        final filteredDocs = _filterEmergencies(snapshot.data!);
+      final filteredDocs = _filterEmergencies(data);
 
-        if (filteredDocs.isEmpty) {
-          return _buildEmptyState();
-        }
+      if (filteredDocs.isEmpty) {
+        return _buildNoResultsState();
+      }
 
-        // Group by date for All Reports view
-        final Map<String, List<Map<String, dynamic>>> groupedDocs = {};
-        if (_selectedFilter == 'all') {
-          for (final doc in filteredDocs) {
-            final timestamp = _safeParseDateTime(doc['timestamp']);
-            final dateKey = timestamp != null
-                ? DateFormat('yyyy-MM-dd').format(timestamp)
-                : 'Unknown Date';
-            
-            if (!groupedDocs.containsKey(dateKey)) {
-              groupedDocs[dateKey] = [];
-            }
-            groupedDocs[dateKey]!.add(doc);
+      // Group by date for All Reports view
+      final Map<String, List<Map<String, dynamic>>> groupedDocs = {};
+      if (_selectedFilter == 'all') {
+        for (final doc in filteredDocs) {
+          final timestamp = _safeParseDateTime(doc['timestamp']);
+          final dateKey = timestamp != null
+              ? DateFormat('yyyy-MM-dd').format(timestamp)
+              : 'Unknown Date';
+          
+          if (!groupedDocs.containsKey(dateKey)) {
+            groupedDocs[dateKey] = [];
           }
+          groupedDocs[dateKey]!.add(doc);
         }
+      }
 
-        return RefreshIndicator(
-          onRefresh: _refreshData,
-          child: _selectedFilter == 'all' 
-              ? _buildGroupedList(groupedDocs)
-              : _buildRegularList(filteredDocs),
-        );
-      },
+      return RefreshIndicator(
+        onRefresh: _refreshData,
+        child: _selectedFilter == 'all' 
+            ? _buildGroupedList(groupedDocs)
+            : _buildRegularList(filteredDocs),
+      );
+    },
+  );
+}
+
+  Widget _buildLoadingState() {
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          child: LinearProgressIndicator(
+            backgroundColor: IncidentReportConstants.colorScheme['primaryLight'],
+            valueColor: AlwaysStoppedAnimation<Color>(
+              IncidentReportConstants.colorScheme['primary']!,
+            ),
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: 4,
+            itemBuilder: (context, index) => _buildShimmerCard(),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Icon(
+                Icons.downloading_rounded,
+                size: 48,
+                color: IncidentReportConstants.colorScheme['primary']!.withOpacity(0.5),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Loading Incident Reports...',
+                style: TextStyle(
+                  color: IncidentReportConstants.colorScheme['primaryDark'],
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Please wait while we fetch the latest emergency reports',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -1477,40 +1953,51 @@ Widget _buildFilterSection() {
   }
 
   Widget _buildErrorState(String error) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.error_outline_rounded,
-              size: 64, color: IncidentReportConstants.colorScheme['error']),
-          const SizedBox(height: 16),
-          const Text(
-            'Something went wrong',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            error,
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.grey),
-          ),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: _refreshData,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: IncidentReportConstants.colorScheme['primary'],
+    return SizedBox(
+      height: 400,
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.error_outline_rounded,
+              size: 64,
+              color: IncidentReportConstants.colorScheme['error'],
             ),
-            child: const Text('Try Again', style: TextStyle(color: Colors.white)),
-          ),
-        ],
+            const SizedBox(height: 16),
+            const Text(
+              'Unable to Load Incidents',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32.0),
+              child: Text(
+                'There was a problem connecting to the server. Please check your internet connection and try again.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey[600], fontSize: 14),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Error: ${error.length > 100 ? '${error.substring(0, 100)}...' : error}',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.grey, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: _refreshData,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: IncidentReportConstants.colorScheme['primary'],
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              icon: const Icon(Icons.refresh_rounded, color: Colors.white, size: 18),
+              label: const Text('Try Again', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
       ),
-    );
-  }
-
-  Widget _buildLoadingState() {
-    return ListView.builder(
-      itemCount: 6,
-      itemBuilder: (context, index) => _buildShimmerCard(),
     );
   }
 
@@ -1519,348 +2006,392 @@ Widget _buildFilterSection() {
       baseColor: Colors.grey[300]!,
       highlightColor: Colors.grey[100]!,
       child: Container(
-        margin: const EdgeInsets.only(bottom: 16),
+        margin: const EdgeInsets.all(16),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
         ),
-        height: 120,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: double.infinity,
+                        height: 16,
+                        color: Colors.grey[300],
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 120,
+                        height: 14,
+                        color: Colors.grey[300],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              height: 14,
+              color: Colors.grey[300],
+            ),
+            const SizedBox(height: 8),
+            Container(
+              width: 200,
+              height: 14,
+              color: Colors.grey[300],
+            ),
+          ],
+        ),
       ),
     );
   }
 
- Widget _buildEmptyState() {
-  return Center(
-    child: Column(
+  Widget _buildEmptyState() {
+    return SizedBox(
+      height: 400,
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              _getEmptyStateIcon(),
+              size: 80,
+              color: IncidentReportConstants.colorScheme['primary']!.withOpacity(0.4),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              _getEmptyStateTitle(),
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                color: Colors.black87,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 40.0),
+              child: Text(
+                _getEmptyStateDescription(),
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 14,
+                  height: 1.4,
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+            _buildEmptyStateAction(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNoResultsState() {
+    return SizedBox(
+      height: 400,
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.search_off_rounded,
+              size: 80,
+              color: IncidentReportConstants.colorScheme['primary']!.withOpacity(0.4),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              _getNoResultsTitle(),
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: Colors.black87,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 40.0),
+              child: Text(
+                _getNoResultsDescription(),
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 14,
+                  height: 1.4,
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+            _buildNoResultsAction(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Add this new method for empty state icons:
+  IconData _getEmptyStateIcon() {
+    switch (_selectedFilter) {
+      case 'spam':
+        return Icons.mark_email_read_rounded; // More appropriate for spam
+      case 'recent':
+        return Icons.update_rounded; // Indicates recent/current
+      case 'all':
+      default:
+        return Icons.report_problem_rounded; // General incident icon
+    }
+  }
+
+  // Update the _getEmptyStateTitle method:
+  String _getEmptyStateTitle() {
+    switch (_selectedFilter) {
+      case 'spam':
+        return 'No Spam Reports';
+      case 'recent':
+        return 'No Recent Incidents';
+      case 'all':
+      default:
+        return 'No Incident Reports';
+    }
+  }
+
+  // Update the _getEmptyStateDescription method:
+  String _getEmptyStateDescription() {
+    switch (_selectedFilter) {
+      case 'spam':
+        return 'Great news! No spam incidents have been detected. All reports appear to be legitimate emergency incidents.';
+      case 'recent':
+        return 'There are no active incidents requiring immediate attention. All recent reports have been resolved or are in progress.';
+      case 'all':
+      default:
+        return 'No incident reports have been submitted yet. When emergencies are reported, they will appear here automatically.';
+    }
+  }
+
+  // Add this new method for no results title:
+  String _getNoResultsTitle() {
+    switch (_selectedFilter) {
+      case 'spam':
+        return 'No Spam Found';
+      case 'recent':
+        return 'No Matching Incidents';
+      case 'all':
+      default:
+        return 'No Results Found';
+    }
+  }
+
+  // Update the _getNoResultsDescription method:
+  String _getNoResultsDescription() {
+    switch (_selectedFilter) {
+      case 'spam':
+        return 'No spam incidents match your current search criteria. Try adjusting your search terms or check different filters.';
+      case 'recent':
+        return 'No recent incidents match your search. The incidents may have been resolved or try searching with different keywords.';
+      case 'all':
+      default:
+        return 'No incidents found matching your search criteria and filters. Try different search terms or clear some filters.';
+    }
+  }
+
+  Widget _buildEmptyStateAction() {
+    return ElevatedButton.icon(
+      onPressed: _refreshData,
+      style: ElevatedButton.styleFrom(
+        backgroundColor: IncidentReportConstants.colorScheme['primary'],
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+      icon: const Icon(Icons.refresh_rounded, color: Colors.white, size: 18),
+      label: const Text('Refresh Reports', style: TextStyle(color: Colors.white)),
+    );
+  }
+
+  Widget _buildNoResultsAction() {
+    return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Icon(Icons.search_off_rounded,
-            size: 64, color: IncidentReportConstants.colorScheme['primary']),
-        const SizedBox(height: 16),
-        const Text(
-          'No incidents found',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 8),
-        const Text(
-          'Try adjusting your search or filters',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.black),
-        ),
-        const SizedBox(height: 16),
-        ElevatedButton(
+        ElevatedButton.icon(
           onPressed: () {
             setState(() {
               _searchQuery = '';
               _searchController.clear();
-              _selectedDate = null;
-              _selectedDateRange = null; // Add this
             });
           },
           style: ElevatedButton.styleFrom(
             backgroundColor: IncidentReportConstants.colorScheme['primary'],
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
-          child: const Text('Clear Filters', style: TextStyle(color: Colors.white)),
+          icon: const Icon(Icons.clear_all_rounded, color: Colors.white, size: 18),
+          label: const Text('Clear Search', style: TextStyle(color: Colors.white)),
         ),
+        const SizedBox(width: 12),
+        if (_selectedDate != null || _selectedDateRange != null)
+          OutlinedButton.icon(
+            onPressed: () {
+              setState(() {
+                _selectedDate = null;
+                _selectedDateRange = null;
+              });
+            },
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              side: BorderSide(color: IncidentReportConstants.colorScheme['primary']!),
+            ),
+            icon: Icon(Icons.calendar_today_rounded, color: IncidentReportConstants.colorScheme['primary'], size: 18),
+            label: Text('Clear Date', style: TextStyle(color: IncidentReportConstants.colorScheme['primary'])),
+          ),
       ],
-    ),
-  );
-}
+    );
+  }
 
 List<Map<String, dynamic>> _filterEmergencies(List<Map<String, dynamic>> docs) {
-  // For "Spam Reports" - enhanced spam detection with multiple layers
-  if (_selectedFilter == 'spam') {
-    final now = DateTime.now();
-    
-    return docs.where((doc) {
-      final description = (doc['description'] ?? '').toString().toLowerCase();
-      final contactNumber = (doc['contact_number'] ?? '').toString();
-      final name = (doc['name'] ?? '').toString().toLowerCase();
-      final incidentType = (doc['incident_type'] ?? '').toString().toLowerCase();
-      final timestamp = doc['timestamp'];
-      final address = (doc['address'] ?? '').toString().toLowerCase();
-      final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
-      
-      int spamScore = 0;
-      List<String> spamReasons = [];
-
-      // Layer 1: Content-based spam detection
-      final spamPatterns = IncidentReportConstants.spamPatterns;
-      for (final pattern in spamPatterns) {
-        if (description.contains(pattern)) {
-          spamScore += 3; // High score for spam keywords
-          spamReasons.add('Contains spam keyword: "$pattern"');
-          break; // One spam keyword is enough
-        }
-      }
-
-      // Layer 2: Suspicious incident type detection with misspellings
-      final suspiciousTypes = IncidentReportConstants.suspiciousIncidentTypes;
-      bool hasSuspiciousType = false;
-      
-      for (final suspiciousType in suspiciousTypes) {
-        if (incidentType.contains(suspiciousType)) {
-          spamScore += 3; // High score for suspicious incident types
-          spamReasons.add('Suspicious incident type: "$suspiciousType"');
-          hasSuspiciousType = true;
-          break;
-        }
-      }
-
-      // Layer 3: Fuzzy matching for misspelled incident types
-      if (!hasSuspiciousType && incidentType.isNotEmpty) {
-        // Check for common misspelling patterns
-        final misspellingPatterns = [
-          RegExp(r't[e]?st'), // test, tst
-          RegExp(r'dem[o]?o?'), // demo, demoo
-          RegExp(r'samp[le]?l?'), // sample, sampel
-          RegExp(r'fak[e]?'), // fake, fak
-          RegExp(r'spam[m]?'), // spam, spamm
-          RegExp(r'un[k]?now[n]?'), // unknown, unknow
-          RegExp(r'misc[elaneous]?'), // miscellaneous, misc
-          RegExp(r'ch[e]?ck'), // check, chek
-          RegExp(r'verif[y]?'), // verify, verif
-          RegExp(r'tr[i]?al'), // trial, trail
-          RegExp(r'exp[e]?r[i]?ment'), // experiment, expirement
-          RegExp(r'practic[e]?s?'), // practice, practise
-          RegExp(r'dum[m]?y'), // dummy, dumy
-          RegExp(r'bog[u]?s'), // bogus, bogous
-        ];
+    // For "Spam Reports" - use the database is_spam field
+    if (_selectedFilter == 'spam') {
+      return docs.where((doc) {
+        // Use the database is_spam field if available, otherwise fall back to analysis
+        final bool isSpam = doc['is_spam'] as bool? ?? false;
         
-        for (final pattern in misspellingPatterns) {
-          if (pattern.hasMatch(incidentType)) {
-            spamScore += 2; // Medium score for misspelled suspicious types
-            spamReasons.add('Misspelled suspicious incident type: "$incidentType"');
-            break;
-          }
+        if (isSpam) {
+          debugPrint('📋 SPAM FILTERED FROM DATABASE - Incident ID: ${doc['id']}');
+          return true;
         }
-      }
-
-      // Layer 4: Suspicious name patterns
-      final suspiciousNames = ['test', 'demo', 'user', 'admin', 'unknown', 'anonymous', 'tester'];
-      for (final suspiciousName in suspiciousNames) {
-        if (name == suspiciousName) {
-          spamScore += 2;
-          spamReasons.add('Suspicious name: "$suspiciousName"');
-          break;
-        }
-      }
-
-      // Layer 5: Contact number analysis
-      if (contactNumber.length < 5 || 
-          contactNumber == '0000000000' || 
-          contactNumber == '1234567890' ||
-          contactNumber == '1111111111' ||
-          contactNumber.contains('123') && contactNumber.length <= 6) {
-        spamScore += 3;
-        spamReasons.add('Invalid/suspicious contact number');
-      }
-
-      // Layer 6: Frequency analysis from same contact number
-      final incidentsFromSameContact = docs.where((otherDoc) {
-        return otherDoc['contact_number'] == contactNumber;
-      }).length;
-      
-      if (incidentsFromSameContact >= 3) {
-        spamScore += 2;
-        spamReasons.add('Multiple reports from same number ($incidentsFromSameContact)');
-      }
-
-      // Layer 7: Time-based analysis (multiple reports in short time)
-      if (timestamp != null) {
-        try {
-          final incidentTime = DateTime.parse(timestamp);
-          final timeDiff = now.difference(incidentTime);
-          
-          // Check for multiple reports within last 30 minutes
-          final recentIncidents = docs.where((otherDoc) {
-            if (otherDoc['contact_number'] != contactNumber) return false;
-            final otherTimestamp = otherDoc['timestamp'];
-            if (otherTimestamp == null) return false;
-            try {
-              final otherTime = DateTime.parse(otherTimestamp);
-              return now.difference(otherTime) <= const Duration(minutes: 30);
-            } catch (e) {
-              return false;
-            }
-          }).length;
-          
-          if (recentIncidents >= 2) {
-            spamScore += 3;
-            spamReasons.add('Multiple reports in last 30 minutes ($recentIncidents)');
-          }
-        } catch (e) {
-          debugPrint('Error parsing timestamp for spam analysis: $e');
-        }
-      }
-
-      // Layer 8: Description length and pattern analysis
-      if (description.length < 10) {
-        spamScore += 1;
-        spamReasons.add('Very short description');
-      } else if (description.length > 500) {
-        spamScore += 1;
-        spamReasons.add('Excessively long description');
-      }
-
-      // Layer 9: Repeated content detection
-      final words = description.split(' ');
-      final uniqueWords = Set<String>.from(words);
-      final repetitionRatio = uniqueWords.length / (words.length > 0 ? words.length : 1);
-      if (repetitionRatio < 0.3 && words.length > 20) {
-        spamScore += 2;
-        spamReasons.add('High content repetition detected');
-      }
-
-      // Layer 10: URL and link detection (beyond basic patterns)
-      final urlRegex = RegExp(r'((https?://|www\.)[^\s]+)');
-      if (urlRegex.hasMatch(description)) {
-        spamScore += 3;
-        spamReasons.add('Contains URLs/links');
-      }
-
-      // Layer 11: Special character analysis
-      final specialCharRegex = RegExp(r'[!@#$%^&*(),?":{}|<>]');
-      final specialCharCount = specialCharRegex.allMatches(description).length;
-      if (specialCharCount > 10) {
-        spamScore += 1;
-        spamReasons.add('Excessive special characters');
-      }
-
-      // Layer 12: ALL CAPS detection
-      final upperCaseRatio = description.replaceAll(RegExp(r'[^A-Z]'), '').length / (description.length > 0 ? description.length : 1);
-      if (upperCaseRatio > 0.7 && description.length > 20) {
-        spamScore += 1;
-        spamReasons.add('Excessive uppercase text');
-      }
-
-      // Layer 13: Suspicious location patterns
-      final suspiciousLocations = ['test', 'demo', 'unknown', 'none', 'na', 'home', 'office', 'street'];
-      for (final suspiciousLocation in suspiciousLocations) {
-        if (address.contains(suspiciousLocation) || landmark.contains(suspiciousLocation)) {
-          spamScore += 1;
-          spamReasons.add('Suspicious location/landmark');
-          break;
-        }
-      }
-
-      // Final decision with threshold
-      final isSpam = spamScore >= 5; // Threshold for spam classification
-      
-      if (isSpam) {
-        debugPrint('🚫 SPAM DETECTED - Score: $spamScore - Reasons: ${spamReasons.join(", ")}');
-        debugPrint('   Contact: $contactNumber, Type: $incidentType, Description: ${description.length} chars');
-      }
-
-      return isSpam;
-    }).where((doc) {
-      // Apply search filter to spam results
-      final location = (doc['address'] ?? '').toString().toLowerCase();
-      final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
-      final type = (doc['incident_type'] ?? '').toString().toLowerCase();
-      
-      return _searchQuery.isEmpty ||
-          location.contains(_searchQuery) ||
-          landmark.contains(_searchQuery) ||
-          type.contains(_searchQuery);
-    }).toList();
-  }
-
-  // For "All Reports" with no date selected - show EVERYTHING
-  if (_selectedFilter == 'all' && _selectedDate == null && _selectedDateRange == null) {
-    return docs.where((doc) {
-      final location = (doc['address'] ?? '').toString().toLowerCase();
-      final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
-      final type = (doc['incident_type'] ?? '').toString().toLowerCase();
-      
-      // Apply search filter only - NO date or status filtering
-      return _searchQuery.isEmpty ||
-          location.contains(_searchQuery) ||
-          landmark.contains(_searchQuery) ||
-          type.contains(_searchQuery);
-    }).toList();
-  }
-
-  final now = DateTime.now();
-  DateTime start, end;
-
-  // Define date range for filtered views
-  if (_selectedFilter == 'recent') {
-    // "Recent" view - today only
-    start = DateTime(now.year, now.month, now.day);
-    end = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
-  } else if (_selectedFilter == 'all' && _selectedDateRange != null) {
-    // "All Reports" with date range selected
-    start = DateTime(
-      _selectedDateRange!.start.year,
-      _selectedDateRange!.start.month,
-      _selectedDateRange!.start.day,
-    );
-    end = DateTime(
-      _selectedDateRange!.end.year,
-      _selectedDateRange!.end.month,
-      _selectedDateRange!.end.day,
-      23, 59, 59, 999,
-    );
-  } else if (_selectedFilter == 'all' && _selectedDate != null) {
-    // "All Reports" with single date selected (backward compatibility)
-    start = DateTime(
-      _selectedDate!.year,
-      _selectedDate!.month,
-      _selectedDate!.day,
-    );
-    end = DateTime(
-      _selectedDate!.year,
-      _selectedDate!.month,
-      _selectedDate!.day,
-      23, 59, 59, 999,
-    );
-  } else {
-    // This shouldn't happen, but return all as fallback
-    return docs;
-  }
-
-  // Filter by date for "Recent" and "All Reports with date selected"
-  final dateFiltered = docs.where((incident) {
-    final timestamp = incident['timestamp'];
-    if (timestamp == null) return false;
-    
-    try {
-      final incidentDate = DateTime.parse(timestamp);
-      return incidentDate.isAfter(start.subtract(const Duration(seconds: 1))) && 
-            incidentDate.isBefore(end.add(const Duration(seconds: 1)));
-    } catch (e) {
-      debugPrint('Error parsing timestamp: $e');
-      return false;
+        return false;
+      }).where((doc) {
+        // Apply search filter to spam results
+        final location = (doc['address'] ?? '').toString().toLowerCase();
+        final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
+        final type = (doc['incident_type'] ?? '').toString().toLowerCase();
+        
+        return _searchQuery.isEmpty ||
+            location.contains(_searchQuery) ||
+            landmark.contains(_searchQuery) ||
+            type.contains(_searchQuery);
+      }).toList();
     }
-  }).toList();
 
-  // Apply status filtering ONLY for "Recent" view - filter out resolved and declined
-  final statusFiltered = _selectedFilter == 'recent' 
-      ? dateFiltered.where((incident) {
-          final status = (incident['latest_status'] ?? incident['status'] ?? 'pending').toString().toLowerCase();
-          return status != 'resolved' && status != 'declined';
-        }).toList()
-      : dateFiltered; // "All Reports" shows ALL statuses
+    // For "All Reports" with no date selected - show EVERYTHING
+    if (_selectedFilter == 'all' && _selectedDate == null && _selectedDateRange == null) {
+      return docs.where((doc) {
+        final location = (doc['address'] ?? '').toString().toLowerCase();
+        final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
+        final type = (doc['incident_type'] ?? '').toString().toLowerCase();
+        
+        // Apply search filter only - NO date or status filtering
+        return _searchQuery.isEmpty ||
+            location.contains(_searchQuery) ||
+            landmark.contains(_searchQuery) ||
+            type.contains(_searchQuery);
+      }).toList();
+    }
 
-  // Apply search filter
-  final searchFiltered = statusFiltered.where((doc) {
-    final location = (doc['address'] ?? '').toString().toLowerCase();
-    final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
-    final type = (doc['incident_type'] ?? '').toString().toLowerCase();
+    final now = DateTime.now();
+    DateTime start, end;
 
-    return _searchQuery.isEmpty ||
-        location.contains(_searchQuery) ||
-        landmark.contains(_searchQuery) ||
-        type.contains(_searchQuery);
-  }).toList();
+    // Define date range for filtered views
+    if (_selectedFilter == 'recent') {
+      // "Recent" view - today only
+      start = DateTime(now.year, now.month, now.day);
+      end = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
+    } else if (_selectedFilter == 'all' && _selectedDateRange != null) {
+      // "All Reports" with date range selected
+      start = DateTime(
+        _selectedDateRange!.start.year,
+        _selectedDateRange!.start.month,
+        _selectedDateRange!.start.day,
+      );
+      end = DateTime(
+        _selectedDateRange!.end.year,
+        _selectedDateRange!.end.month,
+        _selectedDateRange!.end.day,
+        23, 59, 59, 999,
+      );
+    } else if (_selectedFilter == 'all' && _selectedDate != null) {
+      // "All Reports" with single date selected (backward compatibility)
+      start = DateTime(
+        _selectedDate!.year,
+        _selectedDate!.month,
+        _selectedDate!.day,
+      );
+      end = DateTime(
+        _selectedDate!.year,
+        _selectedDate!.month,
+        _selectedDate!.day,
+        23, 59, 59, 999,
+      );
+    } else {
+      // This shouldn't happen, but return all as fallback
+      return docs;
+    }
 
-  debugPrint('🔍 IncidentReportScreen filtered ${docs.length} → ${searchFiltered.length} incidents');
-  debugPrint('📅 Filter: $_selectedFilter - Date: ${_selectedDateRange != null ? "Range ${DateFormat('MMM d').format(_selectedDateRange!.start)} to ${DateFormat('MMM d').format(_selectedDateRange!.end)}" : _selectedDate != null ? "Single date" : "All"} - Status filter: ${_selectedFilter == 'recent' ? "Active only" : "All statuses"} - Spam filter: ${_selectedFilter == 'spam' ? "Spam only" : "All"}');
-  
-  return searchFiltered;
-}
+    // Filter by date for "Recent" and "All Reports with date selected"
+    final dateFiltered = docs.where((incident) {
+      final timestamp = incident['timestamp'];
+      if (timestamp == null) return false;
+      
+      try {
+        final incidentDate = DateTime.parse(timestamp);
+        return incidentDate.isAfter(start.subtract(const Duration(seconds: 1))) && 
+              incidentDate.isBefore(end.add(const Duration(seconds: 1)));
+      } catch (e) {
+        debugPrint('Error parsing timestamp: $e');
+        return false;
+      }
+    }).toList();
+
+    // Apply status filtering ONLY for "Recent" view - filter out resolved and declined
+    final statusFiltered = _selectedFilter == 'recent' 
+        ? dateFiltered.where((incident) {
+            final status = (incident['latest_status'] ?? incident['status'] ?? 'pending').toString().toLowerCase();
+            return status != 'resolved' && status != 'declined';
+          }).toList()
+        : dateFiltered; // "All Reports" shows ALL statuses
+
+    // Apply search filter
+    final searchFiltered = statusFiltered.where((doc) {
+      final location = (doc['address'] ?? '').toString().toLowerCase();
+      final landmark = (doc['landmark'] ?? '').toString().toLowerCase();
+      final type = (doc['incident_type'] ?? '').toString().toLowerCase();
+
+      return _searchQuery.isEmpty ||
+          location.contains(_searchQuery) ||
+          landmark.contains(_searchQuery) ||
+          type.contains(_searchQuery);
+    }).toList();
+
+    debugPrint('🔍 IncidentReportScreen filtered ${docs.length} → ${searchFiltered.length} incidents');
+    debugPrint('📅 Filter: $_selectedFilter - Date: ${_selectedDateRange != null ? "Range ${DateFormat('MMM d').format(_selectedDateRange!.start)} to ${DateFormat('MMM d').format(_selectedDateRange!.end)}" : _selectedDate != null ? "Single date" : "All"} - Status filter: ${_selectedFilter == 'recent' ? "Active only" : "All statuses"} - Spam filter: ${_selectedFilter == 'spam' ? "Spam only" : "All"}');
+    
+    return searchFiltered;
+  }
 
   void _showEmergencyDetails(Map<String, dynamic> doc) {
     final incident = IncidentData.fromMap(doc, doc['id'].toString());
@@ -1979,6 +2510,7 @@ List<Map<String, dynamic>> _filterEmergencies(List<Map<String, dynamic>> docs) {
   Future<void> _refreshData() async {
     setState(() {
       _hasNewUpdates = false;
+      _isInitialLoad = true;
     });
 
     try {
@@ -2730,168 +3262,168 @@ class _IncidentDetailsModalState extends State<IncidentDetailsModal> {
     );
   }
 
-Widget _buildStatusTimeline() {
-  if (_loadingStatusUpdates) {
-    return const Center(
-      child: Padding(
-        padding: EdgeInsets.all(24.0),
-        child: CircularProgressIndicator(),
-      ),
-    );
-  }
-
-  // Create a combined list that includes the initial pending status
-  final List<StatusUpdate> allStatusUpdates = [];
-  
-  // Add the initial pending status if it's not in the updates
-  final hasInitialPending = _statusUpdates.any((update) => update.status == 'pending');
-  if (!hasInitialPending && widget.incident.effectiveStatus == 'pending') {
-    allStatusUpdates.add(
-      StatusUpdate(
-        id: 'initial',
-        incidentId: widget.incident.id,
-        status: 'pending',
-        note: 'Incident reported',
-        updatedBy: widget.incident.name ?? 'Anonymous',
-        createdAt: widget.incident.timestamp ?? widget.incident.createdAt ?? DateTime.now(),
-      ),
-    );
-  }
-  
-  // Add all the actual status updates
-  allStatusUpdates.addAll(_statusUpdates);
-
-  if (allStatusUpdates.isEmpty) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.grey[50],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade300),
-      ),
-      child: Column(
-        children: [
-          Icon(
-            Icons.history_rounded,
-            size: 48,
-            color: Colors.grey[400],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'No Status History',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: Colors.grey[600],
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Status updates will appear here once they are added.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: Colors.grey[500],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  return Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(
-        'STATUS HISTORY',
-        style: TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w700,
-          color: IncidentReportConstants.colorScheme['primaryDark'],
+  Widget _buildStatusTimeline() {
+    if (_loadingStatusUpdates) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24.0),
+          child: CircularProgressIndicator(),
         ),
-      ),
-      const SizedBox(height: 16),
-      ...allStatusUpdates.reversed.map((update) {
-        final statusStyle = StyleService.getStatusStyle(update.status);
-        
-        return Container(
-          margin: const EdgeInsets.only(bottom: 16),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.grey[50],
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.grey.shade200),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 5,
-                offset: const Offset(0, 2),
+      );
+    }
+
+    // Create a combined list that includes the initial pending status
+    final List<StatusUpdate> allStatusUpdates = [];
+    
+    // Add the initial pending status if it's not in the updates
+    final hasInitialPending = _statusUpdates.any((update) => update.status == 'pending');
+    if (!hasInitialPending && widget.incident.effectiveStatus == 'pending') {
+      allStatusUpdates.add(
+        StatusUpdate(
+          id: 'initial',
+          incidentId: widget.incident.id,
+          status: 'pending',
+          note: 'Incident reported',
+          updatedBy: widget.incident.name ?? 'Anonymous',
+          createdAt: widget.incident.timestamp ?? widget.incident.createdAt ?? DateTime.now(),
+        ),
+      );
+    }
+    
+    // Add all the actual status updates
+    allStatusUpdates.addAll(_statusUpdates);
+
+    if (allStatusUpdates.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: Colors.grey[50],
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey.shade300),
+        ),
+        child: Column(
+          children: [
+            Icon(
+              Icons.history_rounded,
+              size: 48,
+              color: Colors.grey[400],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'No Status History',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey[600],
+            ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Status updates will appear here once they are added.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.grey[500],
               ),
-            ],
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'STATUS HISTORY',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: IncidentReportConstants.colorScheme['primaryDark'],
           ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: statusStyle['bgColor'] as Color,
-                  shape: BoxShape.circle,
+        ),
+        const SizedBox(height: 16),
+        ...allStatusUpdates.reversed.map((update) {
+          final statusStyle = StyleService.getStatusStyle(update.status);
+          
+          return Container(
+            margin: const EdgeInsets.only(bottom: 16),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.grey[50],
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.shade200),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 5,
+                  offset: const Offset(0, 2),
                 ),
-                child: Icon(
-                  statusStyle['icon'] as IconData,
-                  color: statusStyle['color'] as Color,
-                  size: 20,
+              ],
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: statusStyle['bgColor'] as Color,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    statusStyle['icon'] as IconData,
+                    color: statusStyle['color'] as Color,
+                    size: 20,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      update.status.toUpperCase(),
-                      style: TextStyle(
-                        color: statusStyle['color'] as Color,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 16,
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        update.status.toUpperCase(),
+                        style: TextStyle(
+                          color: statusStyle['color'] as Color,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 16,
+                        ),
                       ),
-                    ),
-                    if (update.note.isNotEmpty) ...[
+                      if (update.note.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          update.note,
+                          style: const TextStyle(
+                            color: Colors.black87,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 8),
                       Text(
-                        update.note,
-                        style: const TextStyle(
-                          color: Colors.black87,
-                          fontSize: 14,
+                        'By: ${update.updatedBy}',
+                        style: TextStyle(
+                          color: Colors.grey[600],
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        DateFormat('MMM d, h:mm a').format(update.createdAt.toLocal()),
+                        style: TextStyle(
+                          color: Colors.grey[600],
+                          fontSize: 12,
                         ),
                       ),
                     ],
-                    const SizedBox(height: 8),
-                    Text(
-                      'By: ${update.updatedBy}',
-                      style: TextStyle(
-                        color: Colors.grey[600],
-                        fontSize: 12,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      DateFormat('MMM d, h:mm a').format(update.createdAt.toLocal()),
-                      style: TextStyle(
-                        color: Colors.grey[600],
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-            ],
-          ),
-        );
-      }),
-    ],
-  );
-}
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
 
   Widget _buildStatusSection() {
     if (widget.userRole == 'moderator') {
@@ -2901,142 +3433,142 @@ Widget _buildStatusTimeline() {
     }
   }
 
-Widget _buildAdminStatusSection() {
-  // Ensure _selectedStatus is valid and exists in status options
-  final availableStatusOptions = IncidentReportConstants.statusOptions;
-  
-  // Validate and set default if current selection is invalid
-  if (!availableStatusOptions.contains(_selectedStatus)) {
-    _selectedStatus = widget.incident.effectiveStatus;
-    // If incident status is also invalid, fall back to first option
+  Widget _buildAdminStatusSection() {
+    // Ensure _selectedStatus is valid and exists in status options
+    final availableStatusOptions = IncidentReportConstants.statusOptions;
+    
+    // Validate and set default if current selection is invalid
     if (!availableStatusOptions.contains(_selectedStatus)) {
-      _selectedStatus = availableStatusOptions.first;
+      _selectedStatus = widget.incident.effectiveStatus;
+      // If incident status is also invalid, fall back to first option
+      if (!availableStatusOptions.contains(_selectedStatus)) {
+        _selectedStatus = availableStatusOptions.first;
+      }
     }
-  }
 
-  final dropdownItems = <DropdownMenuItem<String>>[];
-  for (final status in availableStatusOptions) {
-    final style = StyleService.getStatusStyle(status);
-    dropdownItems.add(
-      DropdownMenuItem<String>(
-        value: status,
-        child: Row(
-          children: [
-            Icon(style['icon'] as IconData, color: style['color'] as Color),
-            const SizedBox(width: 12),
-            Text(style['label'] as String),
-          ],
-        ),
-      ),
-    );
-  }
-
-  return Container(
-    padding: const EdgeInsets.all(20),
-    decoration: BoxDecoration(
-      color: Colors.grey[50],
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: Colors.grey.shade300),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'UPDATE STATUS',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w700,
-            color: IncidentReportConstants.colorScheme['primaryDark'],
-          ),
-        ),
-        const SizedBox(height: 16),
-        DropdownButtonFormField<String>(
-          initialValue: _selectedStatus,
-          items: dropdownItems,
-          onChanged: _updatingStatus ? null : (String? newValue) {
-            if (newValue != null) {
-              _handleStatusChange(newValue);
-            }
-          },
-          decoration: const InputDecoration(
-            border: OutlineInputBorder(),
-            filled: true,
-            fillColor: Colors.white,
-          ),
-        ),
-        const SizedBox(height: 16),
-        Form(
-          key: _formKey,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    final dropdownItems = <DropdownMenuItem<String>>[];
+    for (final status in availableStatusOptions) {
+      final style = StyleService.getStatusStyle(status);
+      dropdownItems.add(
+        DropdownMenuItem<String>(
+          value: status,
+          child: Row(
             children: [
-              Text(
-                'ADD NOTE',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.grey[600],
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextFormField(
-                controller: _noteController,
-                maxLines: 3,
-                decoration: const InputDecoration(
-                  hintText: "Add a note about this update...",
-                  border: OutlineInputBorder(),
-                  filled: true,
-                  fillColor: Colors.white,
-                ),
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Please add a note';
-                  }
-                  return null;
-                },
-              ),
+              Icon(style['icon'] as IconData, color: style['color'] as Color),
+              const SizedBox(width: 12),
+              Text(style['label'] as String),
             ],
           ),
         ),
-        const SizedBox(height: 16),
-        SizedBox(
-          width: double.infinity,
-          child: _updatingStatus
-              ? ElevatedButton(
-                  onPressed: null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: IncidentReportConstants.colorScheme['primary']!.withOpacity(0.6),
-                    padding: const EdgeInsets.symmetric(vertical: 16),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'UPDATE STATUS',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: IncidentReportConstants.colorScheme['primaryDark'],
+            ),
+          ),
+          const SizedBox(height: 16),
+          DropdownButtonFormField<String>(
+            initialValue: _selectedStatus,
+            items: dropdownItems,
+            onChanged: _updatingStatus ? null : (String? newValue) {
+              if (newValue != null) {
+                _handleStatusChange(newValue);
+              }
+            },
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              filled: true,
+              fillColor: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'ADD NOTE',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.grey[600],
                   ),
-                  child: const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                        ),
-                      ),
-                      SizedBox(width: 12),
-                      Text('UPDATING...', style: TextStyle(color: Colors.white)),
-                    ],
-                  ),
-                )
-              : ElevatedButton(
-                  onPressed: _updateStatus,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: IncidentReportConstants.colorScheme['primary'],
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                  child: const Text('SAVE UPDATE', style: TextStyle(color: Colors.white)),
                 ),
-        ),
-      ],
-    ),
-  );
-}
+                const SizedBox(height: 8),
+                TextFormField(
+                  controller: _noteController,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    hintText: "Add a note about this update...",
+                    border: OutlineInputBorder(),
+                    filled: true,
+                    fillColor: Colors.white,
+                  ),
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'Please add a note';
+                    }
+                    return null;
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: _updatingStatus
+                ? ElevatedButton(
+                    onPressed: null,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: IncidentReportConstants.colorScheme['primary']!.withOpacity(0.6),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        ),
+                        SizedBox(width: 12),
+                        Text('UPDATING...', style: TextStyle(color: Colors.white)),
+                      ],
+                    ),
+                  )
+                : ElevatedButton(
+                    onPressed: _updateStatus,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: IncidentReportConstants.colorScheme['primary'],
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
+                    child: const Text('SAVE UPDATE', style: TextStyle(color: Colors.white)),
+                ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Future<void> _handleStatusChange(String newValue) async {
     if (newValue == 'declined') {

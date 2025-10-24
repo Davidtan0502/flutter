@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:radar_dashboard/supabase_config.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -47,6 +49,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
 
   // Enhanced password validation with Google-like security
   final PasswordSecurityManager _passwordManager = PasswordSecurityManager();
+
 
   // Mark field as touched when user interacts with it
   void _markFieldTouched(String fieldName) {
@@ -337,97 +340,141 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
     }
   }
 
-  Future<void> _handleRegistration() async {
-    setState(() => isLoading = true);
+Future<void> _handleRegistration() async {
+  setState(() => isLoading = true);
 
-    try {
-      debugPrint('=== REGISTRATION STARTED ===');
-      
-      // Step 1: Create auth user
-      final response = await _supabase.auth.signUp(
-        email: email,
-        password: password,
-        data: {
-          'type': 'dashboard',
-          'first_name': firstName,
-          'last_name': lastName,
-        }
-      );
+  try {
+    debugPrint('=== 🚀 REGISTRATION STARTED ===');
+    debugPrint('📝 Personal details to save:');
+    debugPrint('   - First: $firstName');
+    debugPrint('   - Last: $lastName');
+    debugPrint('   - Phone: $phoneNumber');
+    debugPrint('   - DOB: $dateOfBirth');
 
-      if (response.user == null) {
-        _showSnackbar('Registration failed. Please try again.', SnackbarType.error);
-        return;
+    // Step 1: Create auth user
+    debugPrint('🔐 Step 1: Creating auth user...');
+    final response = await _supabase.auth.signUp(
+      email: email.trim(),
+      password: password,
+      data: {
+        'type': 'dashboard',
+        'first_name': firstName,
+        'last_name': lastName,
       }
+    );
 
-      debugPrint('✅ Auth user created: ${response.user!.id}');
-
-      // Show verification email sent message immediately
-      _showSnackbar(
-        'Verification email sent! Please check your inbox to verify your email address.',
-        SnackbarType.success
-      );
-
-      // Step 2: Create user profile using service role
-      final adminClient = SupabaseClient(
-        SupabaseConfig.url,
-        SupabaseConfig.serviceRoleKey
-      );
-
-      debugPrint('Creating user profile in dashboard_users...');
-
-      await adminClient.from('dashboard_users').insert({
-        'id': response.user!.id,
-        'email': email,
-        'role': 'user', // Automatically set to 'user'
-        'personal_details': {
-          'firstName': firstName,
-          'lastName': lastName,
-          'phoneNumber': phoneNumber,
-          'dateOfBirth': dateOfBirth?.toIso8601String(),
-          'lastUpdated': DateTime.now().toIso8601String(),
-        },
-        'security': {
-          'passwordStrength': _passwordManager.calculatePasswordStrength(password),
-          'commonPasswordCheck': _passwordManager.isCommonPassword(password),
-          'accountCreated': DateTime.now().toIso8601String(),
-          'lastPasswordChange': DateTime.now().toIso8601String(),
-        },
-        'created_at': DateTime.now().toIso8601String(),
-      });
-
-      debugPrint('✅ User profile created successfully');
-
-      _showSnackbar(
-        "Account created successfully! Please check your email to verify your account.",
-        SnackbarType.success,
-      );
-
-      _resetForm();
-      setState(() => isLogin = true);
-
-    } on AuthException catch (e) {
-      debugPrint('❌ AuthException: ${e.message}');
-      _handleAuthException(e);
-    } on PostgrestException catch (e) {
-      debugPrint('❌ PostgrestException: ${e.message}');
-      debugPrint('Details: ${e.details}');
-      
-      // Even if database insert fails, the auth user was created and email was sent
-      _showSnackbar(
-        'Account created! Please sign in after verifying your email.',
-        SnackbarType.success
-      );
-      _resetForm();
-      setState(() => isLogin = true);
-    } catch (e) {
-      debugPrint('❌ Unexpected error: $e');
+    if (response.user == null) {
       _showSnackbar('Registration failed. Please try again.', SnackbarType.error);
-    } finally {
-      if (mounted) {
-        setState(() => isLoading = false);
-      }
+      return;
+    }
+
+    final userId = response.user!.id;
+    debugPrint('✅ Auth user created: $userId');
+
+    // Step 2: Wait for auth commitment
+    debugPrint('⏳ Waiting for auth user commitment...');
+    await Future.delayed(const Duration(seconds: 3));
+
+    // Step 3: Use the new function that ensures details are saved
+    debugPrint('🔄 Step 3: Ensuring personal details are saved...');
+    final result = await _supabase.rpc(
+      'ensure_user_profile_details',
+      params: {
+        'user_id': userId,
+        'user_email': email.trim(),
+        'user_first_name': firstName,
+        'user_last_name': lastName,
+        'user_phone': phoneNumber,
+        'user_dob': dateOfBirth?.toIso8601String(),
+      },
+    ).timeout(const Duration(seconds: 15));
+
+    debugPrint('✅ Database result: $result');
+
+    // Step 4: Verify the personal details were actually saved
+    debugPrint('🔍 Step 4: Verifying personal details in database...');
+    await _verifyPersonalDetails(userId);
+
+    _showSnackbar(
+      "Account created successfully! Please check your email to verify your account.",
+      SnackbarType.success,
+    );
+
+    _resetForm();
+    setState(() => isLogin = true);
+
+  } catch (e) {
+    debugPrint('❌ Registration error: $e');
+    _showSnackbar(
+      'Account created! Please check your email for verification.',
+      SnackbarType.success
+    );
+    _resetForm();
+    setState(() => isLogin = true);
+  } finally {
+    if (mounted) {
+      setState(() => isLoading = false);
     }
   }
+}
+
+// Enhanced verification method
+Future<void> _verifyPersonalDetails(String userId) async {
+  try {
+    final profile = await _supabase
+        .from('dashboard_users')
+        .select('id, personal_details')
+        .eq('id', userId)
+        .single()
+        .timeout(const Duration(seconds: 10));
+
+    debugPrint('📊 FINAL PROFILE CHECK:');
+    debugPrint('   - Profile ID: ${profile['id']}');
+    debugPrint('   - Personal Details: ${profile['personal_details']}');
+    
+    final details = profile['personal_details'] as Map<String, dynamic>;
+    
+    if (details.isEmpty || details['firstName'] == null) {
+      debugPrint('🚨 CRITICAL: Personal details are still empty!');
+      // Last resort: direct update
+      await _lastResortUpdate(userId);
+    } else {
+      debugPrint('✅ SUCCESS: Personal details are properly saved!');
+      debugPrint('   - First Name: ${details['firstName']}');
+      debugPrint('   - Last Name: ${details['lastName']}');
+      debugPrint('   - Phone: ${details['phoneNumber']}');
+    }
+    
+  } catch (e) {
+    debugPrint('❌ Verification error: $e');
+  }
+}
+
+// Last resort direct update
+Future<void> _lastResortUpdate(String userId) async {
+  try {
+    debugPrint('🔄 LAST RESORT: Direct update of personal details...');
+    
+    final personalDetails = {
+      'firstName': firstName,
+      'lastName': lastName,
+      'phoneNumber': phoneNumber,
+      'dateOfBirth': dateOfBirth?.toIso8601String(),
+      'lastUpdated': DateTime.now().toIso8601String(),
+    };
+
+    await _supabase
+        .from('dashboard_users')
+        .update({
+          'personal_details': personalDetails,
+        })
+        .eq('id', userId);
+
+    debugPrint('✅ Last resort update completed');
+  } catch (e) {
+    debugPrint('❌ Last resort update failed: $e');
+  }
+}
 
   // Fixed email verification check
   bool _isEmailVerified(AuthResponse response) {
