@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:animations/animations.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -44,45 +46,54 @@ class _NavigationScreenState extends State<NavigationScreen>
     _initializeNavigationItems();
   }
 
-  Future<void> _fetchUserName() async {
-    try {
-      final user = _supabase.auth.currentUser;
-      if (user != null) {
-        // Fetch user profile from your profiles table
-        final response = await _supabase
-            .from('profiles')
-            .select('full_name')
-            .eq('id', user.id)
-            .single();
+Future<void> _fetchUserName() async {
+  try {
+    final user = _supabase.auth.currentUser;
+    if (user != null) {
+      // Fetch jsonb field directly
+      final response = await _supabase
+          .from('dashboard_users')
+          .select('personal_details')
+          .eq('id', user.id)
+          .maybeSingle();
 
-        // For newer Supabase versions, response is the data directly
-        if (response != null) {
-          final String? fullName = response['full_name'];
-          if (mounted) {
-            setState(() {
-              _userName = fullName ?? user.email?.split('@').first ?? 'User';
-            });
-          }
-        } else {
-          // Fallback to email username if profile not found
-          if (mounted) {
-            setState(() {
-              _userName = user.email?.split('@').first ?? 'User';
-            });
-          }
+      if (response != null && response['personal_details'] != null) {
+        final Map<String, dynamic> details =
+            Map<String, dynamic>.from(response['personal_details']);
+
+        final String firstName = (details['firstName'] ?? '').toString().trim();
+        final String lastName = (details['lastName'] ?? '').toString().trim();
+
+        final String fullName = (firstName.isNotEmpty || lastName.isNotEmpty)
+            ? '$firstName $lastName'.trim()
+            : (user.email?.split('@').first ?? 'User');
+
+        if (mounted) {
+          setState(() {
+            _userName = fullName;
+          });
+        }
+      } else {
+        // Fallback if no personal_details found
+        if (mounted) {
+          setState(() {
+            _userName = user.email?.split('@').first ?? 'User';
+          });
         }
       }
-    } catch (e) {
-      debugPrint('Error fetching user name: $e');
-      // Fallback to email username
-      final user = _supabase.auth.currentUser;
-      if (mounted) {
-        setState(() {
-          _userName = user?.email?.split('@').first ?? 'User';
-        });
-      }
+    }
+  } catch (e) {
+    debugPrint('Error fetching user name: $e');
+    final user = _supabase.auth.currentUser;
+    if (mounted) {
+      setState(() {
+        _userName = user?.email?.split('@').first ?? 'User';
+      });
     }
   }
+}
+
+
 
   void _initializeNavigationItems() {
     // All navigation items
